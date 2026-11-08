@@ -268,7 +268,12 @@ function render() {
     seat.appendChild(hole);
 
     const plate = el('div', 'plate');
-    plate.appendChild(el('div', 'nm', p.name + (isMe ? ' (you)' : '')));
+    // Name row with dealer / blind badges inside the nameplate, so nothing sits on top of the cards.
+    const nm = el('div', 'nm');
+    nm.appendChild(el('span', 'who', p.name + (isMe ? ' (you)' : '')));
+    if (p.isButton) nm.appendChild(el('span', 'badge d', 'D'));
+    if (h && !done && (p.isSB || p.isBB)) nm.appendChild(el('span', 'badge blind', p.isBB ? 'BB' : 'SB'));
+    plate.appendChild(nm);
     const ch = el('div', 'ch', fmt(p.chips));
     if (p.allIn && h && !done) ch.appendChild(el('span', 'allin-badge', 'ALL-IN'));
     plate.appendChild(ch);
@@ -281,8 +286,6 @@ function render() {
       side.classList.add('stack-side', pos.x > 50 ? 'left' : 'right');
       seat.appendChild(side);
     }
-    if (p.isButton) seat.appendChild(el('div', 'tag d', 'D'));
-    if (h && !done && (p.isSB || p.isBB)) seat.appendChild(el('div', 'tag blind', p.isBB ? 'BB' : 'SB'));
     wrap.appendChild(seat);
 
     if (p.bet > 0 && h && !done) {
