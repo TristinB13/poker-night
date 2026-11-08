@@ -14,9 +14,9 @@ function token() {
   return t;
 }
 
-function toast(msg) {
+function toast(msg, ms = 2600) {
   const t = $('toast'); t.textContent = msg; t.classList.add('show');
-  clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove('show'), 2600);
+  clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove('show'), ms);
 }
 function emit(ev, data = {}) {
   return new Promise(res => socket.emit(ev, data, r => { if (!r.ok) toast(r.error); res(r); }));
@@ -451,48 +451,78 @@ $('leaveBtn').onclick = async () => {
 // ---------- sounds (generated in the browser, no files needed) ----------
 const sfx = (() => {
   let ctx = null;
+  let primed = false;
   let on = load('pn_sound') !== 'off';
+  function getCtx() {
+    if (!ctx) {
+      try { ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch { return null; }
+    }
+    return ctx;
+  }
+  // Browsers only allow audio after the person interacts with the page. Firefox is the strictest,
+  // so we try to start audio on every kind of tap/click/keypress until it's running,
+  // and play a silent sound the first time to fully unlock it.
   const unlock = () => {
-    try {
-      if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
-      if (ctx.state === 'suspended') ctx.resume();
-    } catch {}
+    const c = getCtx();
+    if (!c) return;
+    if (c.state !== 'running') c.resume().catch(() => {});
+    if (!primed) {
+      primed = true;
+      try {
+        const src = c.createBufferSource();
+        src.buffer = c.createBuffer(1, 1, 22050);
+        src.connect(c.destination);
+        src.start(0);
+      } catch {}
+    }
   };
-  window.addEventListener('pointerdown', unlock, { capture: true });
-  window.addEventListener('keydown', unlock, { capture: true });
-  const ready = () => on && ctx && ctx.state === 'running';
+  for (const ev of ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'click', 'touchend', 'keydown']) {
+    window.addEventListener(ev, unlock, { capture: true, passive: true });
+  }
+  // Play now if audio is running; otherwise try to resume first (works once the page has been clicked).
+  function play(fn) {
+    if (!on) return;
+    const c = getCtx();
+    if (!c) return;
+    if (c.state === 'running') return fn(c);
+    c.resume().then(() => { if (c.state === 'running') fn(c); }).catch(() => {});
+  }
 
   function tone(freq, dur, { type = 'sine', vol = 0.12, at = 0, to = null } = {}) {
-    if (!ready()) return;
-    const t0 = ctx.currentTime + at;
-    const o = ctx.createOscillator(), g = ctx.createGain();
-    o.type = type;
-    o.frequency.setValueAtTime(freq, t0);
-    if (to) o.frequency.exponentialRampToValueAtTime(to, t0 + dur);
-    g.gain.setValueAtTime(0.0001, t0);
-    g.gain.exponentialRampToValueAtTime(vol, t0 + 0.008);
-    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-    o.connect(g).connect(ctx.destination);
-    o.start(t0); o.stop(t0 + dur + 0.02);
+    play(ctx => {
+      const t0 = ctx.currentTime + at;
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.type = type;
+      o.frequency.setValueAtTime(freq, t0);
+      if (to) o.frequency.exponentialRampToValueAtTime(to, t0 + dur);
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.exponentialRampToValueAtTime(vol, t0 + 0.008);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+      o.connect(g);
+      g.connect(ctx.destination);
+      o.start(t0); o.stop(t0 + dur + 0.02);
+    });
   }
   function noise(dur, { vol = 0.15, at = 0, freq = 2500, q = 0.8, to = null } = {}) {
-    if (!ready()) return;
-    const t0 = ctx.currentTime + at;
-    const len = Math.ceil(ctx.sampleRate * dur);
-    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
-    const d = buf.getChannelData(0);
-    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
-    const src = ctx.createBufferSource(); src.buffer = buf;
-    const f = ctx.createBiquadFilter(); f.type = 'bandpass'; f.Q.value = q;
-    f.frequency.setValueAtTime(freq, t0);
-    if (to) f.frequency.exponentialRampToValueAtTime(to, t0 + dur);
-    const g = ctx.createGain(); g.gain.value = vol;
-    src.connect(f).connect(g).connect(ctx.destination);
-    src.start(t0);
+    play(ctx => {
+      const t0 = ctx.currentTime + at;
+      const len = Math.ceil(ctx.sampleRate * dur);
+      const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+      const d = buf.getChannelData(0);
+      for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
+      const src = ctx.createBufferSource(); src.buffer = buf;
+      const f = ctx.createBiquadFilter(); f.type = 'bandpass'; f.Q.value = q;
+      f.frequency.setValueAtTime(freq, t0);
+      if (to) f.frequency.exponentialRampToValueAtTime(to, t0 + dur);
+      const g = ctx.createGain(); g.gain.value = vol;
+      src.connect(f); f.connect(g); g.connect(ctx.destination);
+      src.start(t0);
+    });
   }
   return {
     get on() { return on; },
     toggle() { on = !on; store('pn_sound', on ? 'on' : 'off'); unlock(); return on; },
+    blocked() { return !ctx || ctx.state !== 'running'; },
     deal(at = 0) { noise(0.07, { vol: 0.35, at, freq: 3200, q: 1.2 }); },
     chips(at = 0) { tone(2400, 0.06, { type: 'triangle', vol: 0.07, at }); tone(3100, 0.07, { type: 'triangle', vol: 0.06, at: at + 0.05 }); tone(2700, 0.08, { type: 'triangle', vol: 0.05, at: at + 0.1 }); },
     check() { tone(180, 0.07, { vol: 0.25 }); tone(170, 0.07, { vol: 0.22, at: 0.12 }); },
@@ -548,5 +578,13 @@ $('soundBtn').onclick = () => {
   const on = sfx.toggle();
   $('soundBtn').textContent = on ? '🔊' : '🔇';
   $('soundBtn').classList.toggle('muted', !on);
-  toast(on ? 'Sound on' : 'Sound off');
+  if (!on) return toast('Sound off');
+  sfx.ding(); // test sound
+  toast('Sound on — you should hear a ding');
+  // If the browser is still holding audio back, say how to allow it.
+  setTimeout(() => {
+    if (sfx.blocked()) toast(/firefox/i.test(navigator.userAgent)
+      ? 'Firefox is blocking sound: click the icon left of the web address → Autoplay → Allow Audio and Video, then reload.'
+      : 'Your browser is blocking sound for this site. Allow sound in the site settings, then reload.', 8000);
+  }, 600);
 };
