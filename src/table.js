@@ -12,11 +12,8 @@ class Table {
     this.hostToken = hostToken;
     this.settings = {
       smallBlind: 5, bigBlind: 10, startingStack: 1000, turnSeconds: 30,
-      runItTwice: false, requireApproval: true,
-      bombPot: false, bombAnteBB: 2, bombEvery: 10, // bomb pots: off by default; ante in big blinds; every N hands (0 = only when the host calls one)
-      ...settings,
+      runItTwice: false, requireApproval: true, ...settings,
     };
-    this.bombNext = false;
     this.pendingBlinds = null;
     // Pauses so the game feels like a live dealer: before each new street, between streets on an all-in runout, and between hands.
     this.delays = { street: 1300, runout: 2200, nextHand: 6000, preAction: 350, ...delays };
@@ -224,21 +221,12 @@ class Table {
     if (this.pendingBlinds) Object.assign(this.settings, this.pendingBlinds);
     this.pendingBlinds = null;
   }
-  setOptions({ runItTwice, requireApproval, bombPot, bombAnteBB, bombEvery }) {
-    if (bombPot !== undefined) {
-      this.settings.bombPot = !!bombPot;
-      if (!bombPot) this.bombNext = false;
-      this.say(`Bomb pots are ${bombPot ? 'on' : 'off'}.`);
-    }
-    if (bombAnteBB !== undefined) {
-      const v = Math.floor(Number(bombAnteBB));
-      if (!(v >= 1 && v <= 100)) throw new Error('Bomb pot ante must be 1–100 big blinds.');
-      this.settings.bombAnteBB = v;
-    }
-    if (bombEvery !== undefined) {
-      const v = Math.floor(Number(bombEvery));
-      if (!(v >= 0 && v <= 1000)) throw new Error('Enter how many hands between bomb pots (0 = only when you call one).');
-      this.settings.bombEvery = v;
+  setOptions({ runItTwice, requireApproval, turnSeconds }) {
+    if (turnSeconds !== undefined) {
+      const v = Math.floor(Number(turnSeconds));
+      if (!(v >= 5 && v <= 300)) throw new Error('Turn time must be 5–300 seconds.');
+      this.settings.turnSeconds = v;
+      this.say(`Turn time is now ${v} seconds (starts with the next turn).`);
     }
     if (runItTwice !== undefined) {
       this.settings.runItTwice = !!runItTwice;
@@ -249,19 +237,6 @@ class Table {
       this.say(requireApproval ? 'New players need host approval.' : 'Anyone with the link can sit down.');
     }
   }
-  // Host calls a bomb pot for the next hand (or cancels it).
-  callBombPot(on = true) {
-    if (!this.settings.bombPot) throw new Error('Turn on bomb pots first.');
-    this.bombNext = !!on;
-    this.say(on ? 'Host called a bomb pot for next hand! 💣' : 'Bomb pot cancelled.');
-  }
-  nextIsBomb() {
-    const st = this.settings;
-    if (!st.bombPot) return false;
-    if (this.bombNext) return true;
-    return st.bombEvery > 0 && (this.handCount + 1) % st.bombEvery === 0;
-  }
-
   shuffleSeats() {
     if (this.running || this.handActive()) throw new Error('Pause the game first.');
     const players = this.seats.filter(Boolean);
@@ -292,11 +267,9 @@ class Table {
     this.button = this.button < 0
       ? ready[crypto.randomInt(ready.length)]
       : this.nextSeat(this.button, s => this.eligible(s));
-    const bomb = this.nextIsBomb();
-    this.bombNext = false;
     const headsUp = ready.length === 2;
-    const sbSeat = bomb ? -1 : headsUp ? this.button : this.nextSeat(this.button, s => this.eligible(s));
-    const bbSeat = bomb ? -1 : this.nextSeat(sbSeat, s => this.eligible(s));
+    const sbSeat = headsUp ? this.button : this.nextSeat(this.button, s => this.eligible(s));
+    const bbSeat = this.nextSeat(sbSeat, s => this.eligible(s));
 
     const h = {
       number: ++this.handCount,
@@ -305,30 +278,19 @@ class Table {
       players: {}, button: this.button, sbSeat, bbSeat,
       currentBet: 0, minRaise: this.bb,
       toAct: -1, deadline: 0, results: null,
-      rit: null, runs: null, ritBase: null, bomb,
+      rit: null, runs: null, ritBase: null,
     };
     for (const s of ready) {
       h.players[s] = { hole: [], bet: 0, total: 0, folded: false, allIn: false, acted: false, locked: false };
       this.seats[s].preAction = null;
     }
     this.hand = h;
-    if (bomb) {
-      // Bomb pot: everyone antes, there's no preflop betting, and the flop comes straight out.
-      const ante = this.settings.bombAnteBB * this.bb;
-      this.say(`— Hand #${h.number} — 💣 BOMB POT! Everyone antes ${ante}.`);
-      for (const seat of ready) {
-        const amt = this.post(seat, ante);
-        h.players[seat].bet = 0; // antes are dead money in the pot, not a bet to match
-        if (h.players[seat].allIn) this.say(`${this.seats[seat].name} antes ${amt} (all-in).`);
-      }
-    } else {
-      this.say(`— Hand #${h.number} — blinds ${this.settings.smallBlind}/${this.bb}`);
-      const sbAmt = this.post(sbSeat, this.settings.smallBlind);
-      this.say(`${this.seats[sbSeat].name} posts small blind ${sbAmt}${h.players[sbSeat].allIn ? ' (all-in)' : ''}.`);
-      const bbAmt = this.post(bbSeat, this.bb);
-      this.say(`${this.seats[bbSeat].name} posts big blind ${bbAmt}${h.players[bbSeat].allIn ? ' (all-in)' : ''}.`);
-      h.currentBet = this.bb;
-    }
+    this.say(`— Hand #${h.number} — blinds ${this.settings.smallBlind}/${this.bb}`);
+    const sbAmt = this.post(sbSeat, this.settings.smallBlind);
+    this.say(`${this.seats[sbSeat].name} posts small blind ${sbAmt}${h.players[sbSeat].allIn ? ' (all-in)' : ''}.`);
+    const bbAmt = this.post(bbSeat, this.bb);
+    this.say(`${this.seats[bbSeat].name} posts big blind ${bbAmt}${h.players[bbSeat].allIn ? ' (all-in)' : ''}.`);
+    h.currentBet = this.bb;
 
     // Deal one card at a time, starting left of the button, like a real dealer.
     const order = [];
@@ -336,12 +298,6 @@ class Table {
     for (let i = 0; i < ready.length; i++) { s = this.nextSeat(s, x => h.players[x]); order.push(s); }
     for (let round = 0; round < 2; round++) for (const seat of order) h.players[seat].hole.push(this.draw());
 
-    if (bomb) {
-      h.toAct = -1;
-      this.changed();
-      this.schedule(() => this.nextStreet(), this.delays.street);
-      return true;
-    }
     h.toAct = bbSeat; // proceed() moves action to the first player who needs to act after the BB
     this.proceed();
     return true;
@@ -684,7 +640,6 @@ class Table {
         board: h.board.map(cardName),
         board2: h.board2 ? h.board2.map(cardName) : null,
         runs: h.runs,
-        bomb: !!h.bomb,
         rit: h.rit ? { pending: h.rit.pending, votes: h.rit.votes, deadline: h.rit.deadline, runs: h.rit.runs || null } : null,
         pot, currentBet: h.currentBet, toAct: h.toAct, deadline: h.deadline,
         results: h.results ? {
@@ -705,7 +660,6 @@ class Table {
       started: this.handCount > 0,
       settings: this.settings,
       pendingBlinds: this.pendingBlinds,
-      bombNext: this.nextIsBomb(), // the next hand dealt will be a bomb pot
       seats, hand,
       log: this.log.slice(-50),
       requests: me && this.isHost(token) ? this.requests.map(r => ({ id: r.id, type: r.type || 'seat', name: r.name, seat: r.seat })) : [],

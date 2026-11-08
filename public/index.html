@@ -42,7 +42,6 @@
     <label class="inline">Seconds per turn<input id="turn" type="number" value="30" min="10" max="300"></label>
     <label class="check"><input id="approval" type="checkbox" checked> I approve each player who joins</label>
     <label class="check"><input id="rit" type="checkbox"> Offer "run it twice" on all-ins</label>
-    <label class="check"><input id="bomb" type="checkbox"> Bomb pots (set how often in the host menu)</label>
     <button id="createBtn" class="btn gold wide">Create table</button>
   </section>
   <p id="lobbyErr" class="err" role="alert"></p>
@@ -65,12 +64,14 @@
     <div id="felt" class="felt">
       <div class="rail"></div>
       <div class="center">
+        <div id="potChips" class="pot-chips"></div>
         <div id="pot" class="pot"></div>
         <div id="board" class="board"></div>
         <div id="board2" class="board hidden"></div>
         <div id="status" class="status"></div>
       </div>
       <div id="seats"></div>
+      <div id="fx" class="fx"></div>
     </div>
   </div>
 

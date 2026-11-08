@@ -55,7 +55,7 @@ $('joinBtn').onclick = () => enter('join', { code: $('code').value });
 $('code').onkeydown = e => { if (e.key === 'Enter') $('joinBtn').click(); };
 $('createBtn').onclick = () => enter('create', {
   startingStack: $('stack').value, smallBlind: $('sb').value, bigBlind: $('bb').value, turnSeconds: $('turn').value,
-  requireApproval: $('approval').checked, runItTwice: $('rit').checked, bombPot: $('bomb').checked,
+  requireApproval: $('approval').checked, runItTwice: $('rit').checked,
 });
 
 function showGame(on) {
@@ -78,6 +78,7 @@ socket.on('state', s => {
   clockOffset = s.now - Date.now();
   playSounds(prev, s);
   render();
+  try { animateChips(prev, s); } catch {}
 });
 
 // ---------- table ----------
@@ -123,6 +124,7 @@ function cardEl(name, extra = '') {
 
 // Seated players: spread everyone evenly, in seat order, with you at the bottom.
 // Visitors: show all 9 seats so they can pick an open one.
+const portrait = () => window.matchMedia('(max-aspect-ratio: 1/1)').matches;
 function seatPos(seat) {
   let i, n;
   if (state.you) {
@@ -131,7 +133,10 @@ function seatPos(seat) {
     i = (taken.indexOf(seat) - taken.indexOf(state.you.seat) + n) % n;
   } else { n = 9; i = seat; }
   const a = Math.PI / 2 + i * 2 * Math.PI / n;
-  return { x: 50 + 50 * Math.cos(a), y: 50 + 50 * Math.sin(a), bx: 50 + 30 * Math.cos(a), by: 50 + 27 * Math.sin(a) };
+  const pos = { x: 50 + 50 * Math.cos(a), y: 50 + 50 * Math.sin(a), bx: 50 + 30 * Math.cos(a), by: 50 + 27 * Math.sin(a) };
+  // On tall phone screens the board fills the middle row, so bets for side seats sit just below it.
+  if (portrait() && Math.abs(Math.cos(a)) > 0.6) { pos.bx = 50 + 25 * Math.cos(a); pos.by = Math.max(pos.by, 50) + 13; }
+  return pos;
 }
 
 // Cards animate in only the first time they appear, one after another like a dealer.
@@ -155,13 +160,72 @@ function renderBoard(id, cards, winList) {
   }
 }
 
+// ---------- chips ----------
+// A stack's height tracks the amount: a starting stack is 40 chips, so stacks visibly shrink as
+// players bet and the pot grows. Up to 10 chips per column; columns use different chip colors.
+const CHIP_COLORS = ['#1d1d22', '#c62832', '#1f8a4c', '#2a64c9', '#7b3fb5', '#d98e1c'];
+function chipCount(amount) {
+  const unit = Math.max(1, state.settings.startingStack / 40);
+  return amount > 0 ? Math.max(1, Math.round(amount / unit)) : 0;
+}
+function chipStack(amount, maxCols) {
+  const box = el('div', 'stack');
+  let n = Math.min(chipCount(amount), maxCols * 10);
+  const cols = Math.ceil(n / 10);
+  for (let c = 0; c < cols; c++) {
+    const col = el('div', 'col');
+    const k = Math.min(10, n - c * 10);
+    col.style.height = `calc(var(--dw, 18px) * (.38 + ${k - 1} * .2))`;
+    for (let i = 0; i < k; i++) {
+      const d = el('div', 'disc');
+      d.style.bottom = `calc(var(--dw, 18px) * ${i} * .2)`;
+      d.style.setProperty('--chip', CHIP_COLORS[c % CHIP_COLORS.length]);
+      col.appendChild(d);
+    }
+    box.appendChild(col);
+  }
+  return box;
+}
+// Chips slide across the table: into the bet spot when someone bets, into the pot when a betting
+// round ends, and from the pot to the winner.
+const POT_XY = { x: 50, y: 36 };
+function fly(from, to, n, delay = 0) {
+  n = Math.max(1, Math.min(n, 8));
+  for (let i = 0; i < n; i++) {
+    const d = el('div', 'fly-chip');
+    d.style.setProperty('--chip', CHIP_COLORS[i % CHIP_COLORS.length]);
+    d.style.left = from.x + '%'; d.style.top = from.y + '%'; d.style.opacity = '0';
+    $('fx').appendChild(d);
+    const t = delay + i * 45;
+    setTimeout(() => { d.style.opacity = '1'; requestAnimationFrame(() => { d.style.left = to.x + '%'; d.style.top = to.y + '%'; }); }, t);
+    setTimeout(() => { d.style.opacity = '0'; }, t + 520);
+    setTimeout(() => d.remove(), t + 800);
+  }
+}
+function animateChips(prev, s) {
+  const h = s.hand, ph = prev && prev.hand;
+  if (!h || !ph || ph.number !== h.number) return;
+  const seatXY = i => { const p = seatPos(i); return { x: p.x, y: p.y }; };
+  const betXY = i => { const p = seatPos(i); return { x: p.bx, y: p.by }; };
+  let collected = false;
+  s.seats.forEach((p, i) => {
+    const before = prev.seats[i], now = p;
+    if (!before || !now) return;
+    if (now.bet > before.bet) fly(seatXY(i), betXY(i), chipCount(now.bet - before.bet));
+    else if (before.bet > 0 && now.bet === 0) { fly(betXY(i), POT_XY, chipCount(before.bet)); collected = true; }
+  });
+  if (h.results && !ph.results) {
+    const delay = collected ? 650 : 0;
+    for (const pot of h.results.pots) for (const w of pot.winners) fly(POT_XY, seatXY(w), chipCount(pot.amount / pot.winners.length), delay);
+  }
+}
+
 function render() {
   const s = state, h = s.hand, you = s.you;
   dealStagger = 0;
   $('tableCode').textContent = s.code;
   const pb = s.pendingBlinds ? ` → ${s.pendingBlinds.smallBlind}/${s.pendingBlinds.bigBlind} next hand` : '';
-  $('blindsInfo').textContent = `Blinds ${s.settings.smallBlind}/${s.settings.bigBlind}${pb}` + (h ? ` · Hand #${h.number}` : '') +
-    (s.bombNext ? ' · 💣 bomb pot next' : '');
+  $('blindsInfo').textContent = `Blinds ${s.settings.smallBlind}/${s.settings.bigBlind}${pb}` + (h ? ` · Hand #${h.number}` : '');
 
   // board(s) + pot
   const wc = h && h.results ? h.results.winCards : [[], []];
@@ -169,7 +233,8 @@ function render() {
   $('board2').classList.toggle('hidden', !(h && h.board2));
   if (h && h.board2) renderBoard('board2', h.board2, wc[1]);
   $('pot').textContent = h && h.pot ? `Pot ${fmt(h.pot)}` : '';
-  if (h && h.bomb && h.street !== 'done') $('pot').prepend(Object.assign(el('span', 'bomb-tag', '💣 BOMB POT'), { style: 'margin-right:8px' }));
+  $('potChips').innerHTML = '';
+  if (h && h.pot) $('potChips').appendChild(chipStack(h.pot, portrait() ? 6 : 9));
   $('status').textContent = statusText();
 
   // seats
@@ -211,6 +276,11 @@ function render() {
     else if (isMe && you.strength) plate.appendChild(el('div', 'str', you.strength));
     if (h && h.toAct === i) { const t = el('div', 'timer'); t.dataset.timer = '1'; plate.appendChild(t); }
     seat.appendChild(plate);
+    if (p.chips > 0) {
+      const side = chipStack(p.chips, portrait() ? 3 : 5);
+      side.classList.add('stack-side', pos.x > 50 ? 'left' : 'right');
+      seat.appendChild(side);
+    }
     if (p.isButton) seat.appendChild(el('div', 'tag d', 'D'));
     if (h && !done && (p.isSB || p.isBB)) seat.appendChild(el('div', 'tag blind', p.isBB ? 'BB' : 'SB'));
     wrap.appendChild(seat);
@@ -218,7 +288,7 @@ function render() {
     if (p.bet > 0 && h && !done) {
       const b = el('div', 'bet');
       b.style.left = pos.bx + '%'; b.style.top = pos.by + '%';
-      b.innerHTML = `<span class="chip"></span>${fmt(p.bet)}`;
+      b.append(chipStack(p.bet, 3), document.createTextNode(fmt(p.bet)));
       wrap.appendChild(b);
     }
   });
@@ -405,25 +475,18 @@ function renderHost() {
   const bb = Object.assign(el('input'), { type: 'number', value: s.settings.bigBlind, placeholder: 'BB' });
   row.append(sb, bb, button('Set blinds', 'btn', () => emit('host', { type: 'blinds', smallBlind: sb.value, bigBlind: bb.value })));
   hb.appendChild(row);
-  for (const [key, label] of [['requireApproval', 'Approve new players'], ['runItTwice', 'Offer run it twice on all-ins'], ['bombPot', 'Bomb pots']]) {
+  for (const [key, label] of [['requireApproval', 'Approve new players'], ['runItTwice', 'Offer run it twice on all-ins']]) {
     const lab = el('label', 'check');
     const cb = Object.assign(el('input'), { type: 'checkbox', checked: !!s.settings[key] });
     cb.onchange = () => emit('host', { type: 'options', [key]: cb.checked });
     lab.append(cb, document.createTextNode(label));
     hb.appendChild(lab);
   }
-  if (s.settings.bombPot) {
-    const mini = el('div', 'mini');
-    const ante = Object.assign(el('input'), { type: 'number', min: 1, max: 100, value: s.settings.bombAnteBB });
-    const every = Object.assign(el('input'), { type: 'number', min: 0, value: s.settings.bombEvery });
-    const l1 = el('label', '', 'Ante (big blinds)'); l1.appendChild(ante);
-    const l2 = el('label', '', 'Every N hands (0 = manual)'); l2.appendChild(every);
-    mini.append(l1, l2, button('Save', 'btn', () => emit('host', { type: 'options', bombAnteBB: ante.value, bombEvery: every.value })));
-    hb.appendChild(mini);
-    hb.appendChild(s.bombNext
-      ? button('Cancel next bomb pot', 'btn wide', () => emit('host', { type: 'bomb', on: false }))
-      : button('💣 Bomb pot next hand', 'btn gold wide', () => emit('host', { type: 'bomb', on: true })));
-  }
+  const tt = el('div', 'row');
+  const secs = Object.assign(el('input'), { type: 'number', min: 5, max: 300, value: s.settings.turnSeconds });
+  const lab = el('label', 'inline', 'Seconds per turn');
+  tt.append(lab, secs, button('Set', 'btn', () => emit('host', { type: 'options', turnSeconds: secs.value })));
+  hb.appendChild(tt);
   box.appendChild(hb);
 }
 
@@ -575,7 +638,6 @@ const sfx = (() => {
     turn() { tone(660, 0.18, { vol: 0.12 }); tone(880, 0.3, { vol: 0.12, at: 0.14 }); },
     win() { [523, 659, 784, 1047].forEach((f, i) => tone(f, 0.25, { type: 'triangle', vol: 0.1, at: i * 0.09 })); },
     allin() { for (let i = 0; i < 5; i++) this.chips(i * 0.07); },
-    boom() { tone(140, 0.6, { vol: 0.35, to: 40 }); noise(0.5, { vol: 0.3, freq: 400, to: 80, q: 0.5 }); },
     tick() { tone(1200, 0.04, { type: 'square', vol: 0.04 }); },
     ding() { tone(988, 0.35, { vol: 0.1 }); tone(1319, 0.4, { vol: 0.07, at: 0.08 }); },
   };
@@ -590,7 +652,6 @@ function playSounds(prev, s) {
 
   // new hand: the deal
   if (h && (!ph || ph.number !== h.number)) {
-    if (h.bomb) sfx.boom();
     const n = Object.keys(s.seats.filter(p => p && p.inHand)).length * 2;
     for (let i = 0; i < Math.min(n, 12); i++) sfx.deal(i * 0.09);
   }
@@ -635,3 +696,7 @@ $('soundBtn').onclick = () => {
       : 'Your browser is blocking sound for this site. Allow sound in the site settings, then reload.', 8000);
   }, 600);
 };
+
+// Re-lay out the table when the window is resized or a phone is rotated.
+let resizeT;
+window.addEventListener('resize', () => { clearTimeout(resizeT); resizeT = setTimeout(() => { if (state) { actionKey = ''; render(); } }, 150); });
