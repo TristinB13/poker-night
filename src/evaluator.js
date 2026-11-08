@@ -74,4 +74,12 @@ function bestHand(cards) {
   return best;
 }
 
-module.exports = { eval5, bestHand, CATEGORY, RANKS };
+// What a player currently holds, for their own display. Works preflop (2 cards) too.
+function currentHandName(cards) {
+  if (cards.length >= 5) return bestHand(cards).name;
+  const r = cards.map(cardRank).sort((a, b) => b - a);
+  if (r.length === 2 && r[0] === r[1]) return `Pair of ${PLURAL[r[0]]}`;
+  return `${RANK_WORD[r[0]]} high`;
+}
+
+module.exports = { eval5, bestHand, currentHandName, CATEGORY, RANKS };

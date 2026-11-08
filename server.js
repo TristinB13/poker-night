@@ -59,35 +59,50 @@ io.on('connection', (socket) => {
       bigBlind: bb,
       smallBlind: num(data.smallBlind, 1, bb, Math.floor(bb / 2)),
       turnSeconds: num(data.turnSeconds, 10, 300, 30),
+      runItTwice: !!data.runItTwice,
+      requireApproval: data.requireApproval !== false,
     };
     const table = new Table({ code, hostToken: token, settings, onUpdate: broadcast });
     tables.set(code, table);
-    table.sit(token, name);
-    socket.data = { code, token };
+    table.sit(token, name, 0);
+    socket.data = { code, token, name };
     socket.join(code);
     broadcast(table);
     return { code, token };
   }));
 
+  // Joining opens the table view. Seated players go straight back to their seat;
+  // everyone else picks an empty seat, which the host may need to approve.
   socket.on('join', (data, cb) => reply(cb, () => {
     const code = String(data.code || '').trim().toUpperCase();
     const table = tables.get(code);
     if (!table) throw new Error('No table with that code.');
     const token = String(data.token || crypto.randomBytes(16).toString('hex'));
-    const name = String(data.name || '').trim();
-    if (!table.playerByToken(token) && !name) throw new Error('Enter your name.');
-    table.sit(token, name);
-    socket.data = { code, token };
+    const name = String(data.name || '').trim().slice(0, 18);
+    const seated = table.playerByToken(token);
+    if (!seated && !name) throw new Error('Enter your name.');
+    if (seated) seated.connected = true;
+    socket.data = { code, token, name: name || (seated && seated.name) };
     socket.join(code);
-    if (table.running && !table.hand) table.startHand();
     broadcast(table);
-    return { code, token };
+    return { code, token, seated: !!seated };
   }));
+
+  socket.on('sit', (data, cb) => reply(cb, () => {
+    const t = current();
+    const r = t.requestSeat(socket.data.token, socket.data.name, data.seat);
+    broadcast(t);
+    return r;
+  }));
+  socket.on('cancelRequest', (_d, cb) => reply(cb, () => { const t = current(); t.cancelRequest(socket.data.token); broadcast(t); }));
 
   socket.on('action', (data, cb) => reply(cb, () => {
     current().act(socket.data.token, { type: data.type, amount: data.amount });
   }));
-
+  socket.on('pre', (data, cb) => reply(cb, () => { const t = current(); t.setPreAction(socket.data.token, data.type); broadcast(t); }));
+  socket.on('away', (data, cb) => reply(cb, () => { const t = current(); t.setAway(socket.data.token, data.on); broadcast(t); }));
+  socket.on('show', (_d, cb) => reply(cb, () => { const t = current(); t.showCards(socket.data.token); broadcast(t); }));
+  socket.on('rit', (data, cb) => reply(cb, () => { const t = current(); t.ritVote(socket.data.token, data.yes); broadcast(t); }));
   socket.on('rebuy', (_d, cb) => reply(cb, () => { const t = current(); t.rebuy(socket.data.token); broadcast(t); }));
 
   socket.on('leave', (_d, cb) => reply(cb, () => {
@@ -104,6 +119,9 @@ io.on('connection', (socket) => {
     if (data.type === 'start') t.setRunning(true);
     else if (data.type === 'pause') t.setRunning(false);
     else if (data.type === 'blinds') t.setBlinds(data.smallBlind, data.bigBlind);
+    else if (data.type === 'approve') t.approve(data.id, !!data.ok);
+    else if (data.type === 'shuffle') t.shuffleSeats();
+    else if (data.type === 'options') t.setOptions({ runItTwice: data.runItTwice, requireApproval: data.requireApproval });
     broadcast(t);
   }));
 

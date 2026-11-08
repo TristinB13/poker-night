@@ -1,19 +1,25 @@
 // No-limit Texas Hold'em table: seating, dealing, betting rounds, side pots, showdown.
 const crypto = require('crypto');
 const { shuffledDeck, cardName } = require('./cards');
-const { bestHand } = require('./evaluator');
+const { bestHand, currentHandName } = require('./evaluator');
 
 const MAX_SEATS = 9;
+const RIT_SECONDS = 15;
 
 class Table {
   constructor({ code, hostToken, settings, delays = {}, onUpdate = () => {} }) {
     this.code = code;
     this.hostToken = hostToken;
-    this.settings = { smallBlind: 5, bigBlind: 10, startingStack: 1000, turnSeconds: 30, ...settings };
+    this.settings = {
+      smallBlind: 5, bigBlind: 10, startingStack: 1000, turnSeconds: 30,
+      runItTwice: false, requireApproval: true, ...settings,
+    };
     this.pendingBlinds = null;
-    this.delays = { street: 900, nextHand: 4000, ...delays };
+    this.delays = { street: 900, nextHand: 6000, preAction: 350, ...delays };
     this.onUpdate = onUpdate;
     this.seats = new Array(MAX_SEATS).fill(null);
+    this.requests = [];          // seat requests waiting for host approval
+    this.denied = new Set();     // tokens whose last request was declined
     this.running = false;
     this.button = -1;
     this.hand = null;
@@ -36,7 +42,7 @@ class Table {
   }
   say(msg) {
     this.log.push({ t: Date.now(), msg });
-    if (this.log.length > 60) this.log.shift();
+    if (this.log.length > 80) this.log.shift();
   }
   changed() { this.onUpdate(this); }
 
@@ -49,33 +55,73 @@ class Table {
     return -1;
   }
   get bb() { return this.settings.bigBlind; }
+  handActive() { return !!this.hand && this.hand.street !== 'done'; }
+  isHost(token) { return token === this.hostToken; }
 
   // ---------- seating ----------
-  sit(token, name) {
+  sit(token, name, seat = null) {
     const existing = this.playerByToken(token);
     if (existing) { existing.name = name || existing.name; existing.connected = true; return existing; }
-    const seat = this.seats.findIndex(s => s === null);
-    if (seat === -1) throw new Error('Table is full (9 players).');
+    if (seat === null || seat === undefined || this.seats[seat]) {
+      if (seat !== null && seat !== undefined && this.seats[seat]) throw new Error('That seat was just taken — pick another.');
+      seat = this.seats.findIndex(s => s === null);
+    }
+    if (seat < 0 || seat >= MAX_SEATS) throw new Error('Table is full (9 players).');
     const p = {
       id: crypto.randomBytes(6).toString('hex'),
       token, name: String(name).slice(0, 18), seat,
       chips: this.settings.startingStack, buyins: 1,
-      connected: true, leaving: false,
+      connected: true, leaving: false, away: false, preAction: null,
     };
     this.seats[seat] = p;
+    this.requests = this.requests.filter(r => r.token !== token);
     this.say(`${p.name} sat down with ${p.chips}.`);
+    if (this.running && !this.hand) this.schedule(() => this.startHand(), 300);
     return p;
+  }
+
+  // A visitor picks a seat. Goes straight in for the host, or when approval is off.
+  requestSeat(token, name, seat) {
+    if (this.playerByToken(token)) throw new Error("You're already seated.");
+    seat = Math.floor(Number(seat));
+    if (!(seat >= 0 && seat < MAX_SEATS)) throw new Error('Pick a seat.');
+    if (this.seats[seat]) throw new Error('That seat is taken.');
+    name = String(name || '').trim().slice(0, 18);
+    if (!name) throw new Error('Enter your name.');
+    this.denied.delete(token);
+    if (!this.settings.requireApproval || this.isHost(token)) {
+      this.sit(token, name, seat);
+      return { seated: true };
+    }
+    const prev = this.requests.find(r => r.token === token);
+    if (prev) prev.seat = seat;
+    else {
+      this.requests.push({ id: crypto.randomBytes(6).toString('hex'), token, name, seat, t: Date.now() });
+      this.say(`${name} asked to join.`);
+    }
+    return { seated: false };
+  }
+  cancelRequest(token) { this.requests = this.requests.filter(r => r.token !== token); }
+
+  approve(id, ok) {
+    const r = this.requests.find(x => x.id === id);
+    if (!r) throw new Error('That request is gone.');
+    this.requests = this.requests.filter(x => x !== r);
+    if (!ok) { this.denied.add(r.token); this.say(`Host declined ${r.name}.`); return; }
+    const seat = this.seats[r.seat] ? this.seats.findIndex(s => s === null) : r.seat;
+    if (seat < 0) throw new Error('Table is full.');
+    this.sit(r.token, r.name, seat);
   }
 
   leave(token) {
     const p = this.playerByToken(token);
-    if (!p) return;
+    if (!p) { this.cancelRequest(token); return; }
     const hp = this.hand && this.hand.players[p.seat];
-    if (hp && this.hand.street !== 'done' && this.hand.street !== 'showdown') {
+    if (hp && this.handActive()) {
       // Still in a hand: fold now if it's their turn, otherwise when action reaches them.
-      // The seat is cleared when the next hand starts.
       p.leaving = true;
       if (!hp.folded && this.hand.toAct === p.seat) this.act(token, { type: 'fold' });
+      else if (this.hand.rit && this.hand.rit.pending && p.seat in this.hand.rit.votes) this.ritVote(token, false);
       this.say(`${p.name} is leaving after this hand.`);
       return;
     }
@@ -92,37 +138,96 @@ class Table {
     const p = this.playerByToken(token);
     if (!p) throw new Error('Not seated.');
     if (p.chips > 0) throw new Error('You still have chips.');
-    if (this.hand && this.hand.players[p.seat] && this.hand.street !== 'done') throw new Error('Wait for the hand to finish.');
+    if (this.handActive() && this.hand.players[p.seat]) throw new Error('Wait for the hand to finish.');
     p.chips = this.settings.startingStack;
     p.buyins += 1;
     this.say(`${p.name} rebought for ${p.chips}.`);
     if (this.running && !this.hand) this.schedule(() => this.startHand(), 500);
   }
 
+  // Away: not dealt into new hands. If away mid-hand, they check when possible, otherwise fold.
+  setAway(token, on) {
+    const p = this.playerByToken(token);
+    if (!p) throw new Error('Not seated.');
+    p.away = !!on;
+    this.say(on ? `${p.name} is away.` : `${p.name} is back.`);
+    if (on && this.handActive()) {
+      const h = this.hand;
+      if (h.toAct === p.seat) this.schedule(() => this.timeout(p.seat, h.number, h.street), 300);
+      if (h.rit && h.rit.pending && p.seat in h.rit.votes && h.rit.votes[p.seat] === null) this.ritVote(token, false);
+    }
+    if (!on && this.running && !this.hand) this.schedule(() => this.startHand(), 300);
+  }
+
+  // Pre-select an action for when it's your turn: 'fold', 'check', 'checkfold', or null to clear.
+  setPreAction(token, type) {
+    const p = this.playerByToken(token);
+    if (!p) throw new Error('Not seated.');
+    if (type === null || type === undefined || type === '') { p.preAction = null; return; }
+    if (!['fold', 'check', 'checkfold'].includes(type)) throw new Error('Unknown pre-action.');
+    const h = this.hand;
+    if (!this.handActive() || !h.players[p.seat] || h.players[p.seat].folded) throw new Error("You're not in this hand.");
+    if (h.toAct === p.seat) throw new Error("It's your turn — just act.");
+    p.preAction = { type, street: h.street, hand: h.number };
+  }
+
+  // After a hand, anyone who was dealt in can show their cards.
+  showCards(token) {
+    const p = this.playerByToken(token);
+    const h = this.hand;
+    if (!p || !h || h.street !== 'done' || !h.players[p.seat]) throw new Error('Nothing to show right now.');
+    if (h.results.shown[p.seat]) return;
+    h.results.shown[p.seat] = h.players[p.seat].hole.map(cardName);
+    this.say(`${p.name} shows ${h.results.shown[p.seat].join(' ')}.`);
+  }
+
   // ---------- host controls ----------
   setRunning(on) {
     this.running = on;
     this.say(on ? 'Game started.' : 'Game will pause after this hand.');
-    if (on && (!this.hand || this.hand.street === 'done')) this.startHand();
+    if (on && !this.handActive()) this.startHand();
   }
   setBlinds(sb, bb) {
     sb = Math.floor(sb); bb = Math.floor(bb);
     if (!(sb > 0 && bb >= sb)) throw new Error('Big blind must be at least the small blind.');
     this.pendingBlinds = { smallBlind: sb, bigBlind: bb };
     this.say(`Blinds will be ${sb}/${bb} starting next hand.`);
-    if (!this.hand || this.hand.street === 'done') this.applyPendingBlinds();
+    if (!this.handActive()) this.applyPendingBlinds();
   }
   applyPendingBlinds() {
     if (this.pendingBlinds) Object.assign(this.settings, this.pendingBlinds);
     this.pendingBlinds = null;
   }
+  setOptions({ runItTwice, requireApproval }) {
+    if (runItTwice !== undefined) {
+      this.settings.runItTwice = !!runItTwice;
+      this.say(`Run it twice is ${runItTwice ? 'on' : 'off'}.`);
+    }
+    if (requireApproval !== undefined) {
+      this.settings.requireApproval = !!requireApproval;
+      this.say(requireApproval ? 'New players need host approval.' : 'Anyone with the link can sit down.');
+    }
+  }
+  shuffleSeats() {
+    if (this.running || this.handActive()) throw new Error('Pause the game first.');
+    const players = this.seats.filter(Boolean);
+    const spots = players.map(p => p.seat).sort((a, b) => a - b);
+    for (let i = players.length - 1; i > 0; i--) {
+      const j = crypto.randomInt(i + 1);
+      [players[i], players[j]] = [players[j], players[i]];
+    }
+    this.seats.fill(null);
+    players.forEach((p, i) => { p.seat = spots[i]; this.seats[p.seat] = p; });
+    this.button = -1; // re-draw for the button
+    this.hand = null;
+    this.say('Host shuffled the seats.');
+  }
 
   // ---------- hand flow ----------
-  eligible(s) { const p = this.seats[s]; return !!p && p.chips > 0 && !p.leaving; }
+  eligible(s) { const p = this.seats[s]; return !!p && p.chips > 0 && !p.leaving && !p.away; }
 
   startHand() {
-    if (this.hand && this.hand.street !== 'done') return false;
-    // clear players who left during the last hand
+    if (this.handActive()) return false;
     for (const p of this.seats) if (p && p.leaving) this.removePlayer(p);
     this.applyPendingBlinds();
     if (!this.running) { this.hand = null; this.changed(); return false; }
@@ -130,7 +235,9 @@ class Table {
     if (ready.length < 2) { this.hand = null; this.say('Waiting for at least 2 players with chips.'); this.changed(); return false; }
 
     // First hand: draw for the button at random. After that it moves one seat left.
-    this.button = this.button < 0 ? ready[crypto.randomInt(ready.length)] : this.nextSeat(this.button, s => this.eligible(s));
+    this.button = this.button < 0
+      ? ready[crypto.randomInt(ready.length)]
+      : this.nextSeat(this.button, s => this.eligible(s));
     const headsUp = ready.length === 2;
     const sbSeat = headsUp ? this.button : this.nextSeat(this.button, s => this.eligible(s));
     const bbSeat = this.nextSeat(sbSeat, s => this.eligible(s));
@@ -138,19 +245,23 @@ class Table {
     const h = {
       number: ++this.handCount,
       deck: shuffledDeck(), pos: 0,
-      board: [], street: 'preflop',
+      board: [], board2: null, street: 'preflop',
       players: {}, button: this.button, sbSeat, bbSeat,
       currentBet: 0, minRaise: this.bb,
       toAct: -1, deadline: 0, results: null,
+      rit: null, runs: null, ritBase: null,
     };
     for (const s of ready) {
       h.players[s] = { hole: [], bet: 0, total: 0, folded: false, allIn: false, acted: false, locked: false };
+      this.seats[s].preAction = null;
     }
     this.hand = h;
     this.say(`— Hand #${h.number} — blinds ${this.settings.smallBlind}/${this.bb}`);
 
-    this.post(sbSeat, this.settings.smallBlind);
-    this.post(bbSeat, this.bb);
+    const sbAmt = this.post(sbSeat, this.settings.smallBlind);
+    this.say(`${this.seats[sbSeat].name} posts small blind ${sbAmt}${h.players[sbSeat].allIn ? ' (all-in)' : ''}.`);
+    const bbAmt = this.post(bbSeat, this.bb);
+    this.say(`${this.seats[bbSeat].name} posts big blind ${bbAmt}${h.players[bbSeat].allIn ? ' (all-in)' : ''}.`);
     h.currentBet = this.bb;
 
     // Deal one card at a time, starting left of the button, like a real dealer.
@@ -160,7 +271,7 @@ class Table {
     for (let round = 0; round < 2; round++) for (const seat of order) h.players[seat].hole.push(this.draw());
 
     h.toAct = bbSeat; // proceed() moves action to the first player who needs to act after the BB
-    this.proceed(true);
+    this.proceed();
     return true;
   }
 
@@ -251,11 +362,12 @@ class Table {
     }
     hp.acted = true;
     hp.locked = false;
+    p.preAction = null;
     this.proceed();
   }
 
   // Decide what happens next after any change in the hand.
-  proceed(fromStart = false) {
+  proceed() {
     const h = this.hand;
     clearTimeout(this.turnTimer);
     const live = Object.keys(h.players).map(Number).filter(s => !h.players[s].folded);
@@ -271,19 +383,39 @@ class Table {
     if (!roundDone) {
       const next = this.nextSeat(h.toAct, s => actors.includes(s) && needs(s));
       h.toAct = next;
+      const turnId = h.turnId = (h.turnId || 0) + 1;
       const p = this.seats[next];
-      // Disconnected or leaving players get a short clock so the game doesn't stall.
-      const limit = p.leaving ? 0 : p.connected ? this.settings.turnSeconds * 1000 : 5000;
-      h.deadline = Date.now() + limit;
       const handNo = h.number, street = h.street;
-      this.turnTimer = setTimeout(() => this.timeout(next, handNo, street), limit);
+
+      // A pre-selected action fires right away (a "check" pre-select is dropped if there's now a bet).
+      const pre = p.preAction;
+      if (pre && pre.hand === handNo && pre.street === street) {
+        const canCheck = h.currentBet - h.players[next].bet <= 0;
+        if (pre.type === 'fold' || pre.type === 'checkfold' || (pre.type === 'check' && canCheck)) {
+          h.deadline = Date.now() + this.delays.preAction;
+          this.schedule(() => {
+            if (this.hand !== h || h.turnId !== turnId) return;
+            const type = pre.type === 'fold' ? 'fold' : canCheck ? 'check' : 'fold';
+            this.act(p.token, { type });
+          }, this.delays.preAction);
+          this.changed();
+          return;
+        }
+      }
+      p.preAction = null;
+
+      // Leaving, away, or disconnected players get a short clock so the game doesn't stall.
+      const limit = p.leaving ? 0 : p.away ? 1500 : p.connected ? this.settings.turnSeconds * 1000 : 5000;
+      h.deadline = Date.now() + limit;
+      this.turnTimer = setTimeout(() => { if (h.turnId === turnId) this.timeout(next, handNo, street); }, limit);
       this.changed();
       return;
     }
     h.toAct = -1;
     this.changed();
     if (actors.length < 2 && h.street !== 'river') {
-      // Everyone left is all-in: run the board out with a short pause per street.
+      // Everyone left is all-in. Offer to run it twice (if the host turned it on), then run the board out.
+      if (this.settings.runItTwice && h.runs === null) return this.startRitVote(live);
       this.schedule(() => this.nextStreet(), this.delays.street);
     } else {
       this.nextStreet();
@@ -295,36 +427,92 @@ class Table {
     if (!h || h.number !== handNo || h.street !== street || h.toAct !== seat) return;
     const p = this.seats[seat];
     const opt = this.options(seat);
-    if (!p.leaving) this.say(`${p.name} ran out of time.`);
+    if (!p.leaving && !p.away) this.say(`${p.name} ran out of time.`);
     this.act(p.token, { type: opt.canCheck && !p.leaving ? 'check' : 'fold' });
+  }
+
+  // ---------- run it twice ----------
+  startRitVote(live) {
+    const h = this.hand;
+    h.rit = { pending: true, votes: {}, deadline: Date.now() + RIT_SECONDS * 1000 };
+    for (const s of live) {
+      const p = this.seats[s];
+      h.rit.votes[s] = p.away || p.leaving ? false : null;
+    }
+    this.say('All-in! Deciding whether to run it twice…');
+    if (Object.values(h.rit.votes).includes(false)) return this.resolveRit(1);
+    const handNo = h.number;
+    this.schedule(() => { if (this.hand === h && h.rit.pending && h.number === handNo) this.resolveRit(1); }, RIT_SECONDS * 1000);
+    this.changed();
+  }
+  ritVote(token, yes) {
+    const h = this.hand;
+    const p = this.playerByToken(token);
+    if (!h || !h.rit || !h.rit.pending || !p || !(p.seat in h.rit.votes)) throw new Error('No vote right now.');
+    if (h.rit.votes[p.seat] !== null) return;
+    h.rit.votes[p.seat] = !!yes;
+    if (!yes) return this.resolveRit(1);
+    if (Object.values(h.rit.votes).every(v => v === true)) return this.resolveRit(2);
+    this.changed();
+  }
+  resolveRit(runs) {
+    const h = this.hand;
+    h.rit.pending = false;
+    h.rit.runs = runs;
+    h.runs = runs;
+    h.ritBase = h.board.slice();
+    this.say(runs === 2 ? 'Everyone agreed — running it twice.' : 'Running it once.');
+    this.changed();
+    this.schedule(() => this.nextStreet(), this.delays.street);
+  }
+  // Deal the second board from the same deck, picking up where the first left off (burns included).
+  dealSecondRun() {
+    const h = this.hand;
+    const b = h.ritBase.slice();
+    if (b.length === 0) { this.draw(); b.push(this.draw(), this.draw(), this.draw()); }
+    if (b.length === 3) { this.draw(); b.push(this.draw()); }
+    if (b.length === 4) { this.draw(); b.push(this.draw()); }
+    h.board2 = b;
+    this.say(`Second run: ${b.map(cardName).join(' ')}`);
   }
 
   nextStreet() {
     const h = this.hand;
     if (!h || h.street === 'done') return;
     for (const hp of Object.values(h.players)) { hp.bet = 0; hp.acted = false; hp.locked = false; }
+    for (const p of this.seats) if (p) p.preAction = null;
     h.currentBet = 0;
     h.minRaise = this.bb;
 
-    if (h.street === 'river') return this.finish(Object.keys(h.players).map(Number).filter(s => !h.players[s].folded), true);
+    if (h.street === 'river') {
+      const live = Object.keys(h.players).map(Number).filter(s => !h.players[s].folded);
+      if (h.runs === 2 && !h.board2) {
+        this.dealSecondRun();
+        this.changed();
+        return this.schedule(() => this.finish(live, true), this.delays.street);
+      }
+      return this.finish(live, true);
+    }
 
     this.draw(); // burn a card before each street, same as live dealing
     if (h.street === 'preflop') { h.board.push(this.draw(), this.draw(), this.draw()); h.street = 'flop'; }
     else if (h.street === 'flop') { h.board.push(this.draw()); h.street = 'turn'; }
     else { h.board.push(this.draw()); h.street = 'river'; }
-    this.say(`${h.street[0].toUpperCase() + h.street.slice(1)}: ${h.board.map(cardName).join(' ')}`);
+    const label = h.street[0].toUpperCase() + h.street.slice(1);
+    this.say(`${h.runs === 2 ? 'First run — ' : ''}${label}: ${h.board.map(cardName).join(' ')}`);
 
     h.toAct = h.button; // action starts with the first live player left of the button
     this.proceed();
   }
 
   // Award the pot(s). Builds side pots from each player's total contribution.
+  // When run twice, each pot is split in half and each half goes to the best hand on its own board.
   finish(live, showdown) {
     const h = this.hand;
     clearTimeout(this.turnTimer);
     h.toAct = -1;
     const all = Object.entries(h.players).map(([s, hp]) => ({ seat: Number(s), hp }));
-    const results = { showdown, pots: [], shown: {}, hands: {} };
+    const results = { showdown, pots: [], shown: {}, hands: {}, hands2: {}, winCards: [[], []] };
 
     if (!showdown) {
       const total = all.reduce((a, x) => a + x.hp.total, 0);
@@ -333,13 +521,18 @@ class Table {
       this.say(`${this.seats[live[0]].name} wins ${total}.`);
     } else {
       h.street = 'showdown';
-      const evals = {};
+      const boards = h.board2 ? [h.board, h.board2] : [h.board];
+      const evals = boards.map(() => ({}));
       for (const s of live) {
-        evals[s] = bestHand([...h.players[s].hole, ...h.board]);
         results.shown[s] = h.players[s].hole.map(cardName);
-        results.hands[s] = { name: evals[s].name, cards: evals[s].cards.map(cardName) };
+        boards.forEach((board, r) => {
+          const e = bestHand([...h.players[s].hole, ...board]);
+          evals[r][s] = e;
+          (r === 0 ? results.hands : results.hands2)[s] = { name: e.name, cards: e.cards.map(cardName) };
+        });
       }
       const levels = [...new Set(live.map(s => h.players[s].total))].sort((a, b) => a - b);
+      const contested = levels.filter(L => live.filter(s => h.players[s].total >= L).length > 1).length;
       let prev = 0;
       levels.forEach((level, i) => {
         let amount = 0;
@@ -355,20 +548,28 @@ class Table {
           this.say(`${this.seats[eligible[0]].name} gets back ${amount} (uncalled).`);
           return;
         }
-        const best = Math.max(...eligible.map(s => evals[s].score));
-        const winners = eligible.filter(s => evals[s].score === best);
-        const share = Math.floor(amount / winners.length);
-        let odd = amount - share * winners.length;
-        // odd chips go to the first winner(s) left of the button
-        const ordered = [];
-        let s = h.button;
-        for (let k = 0; k < MAX_SEATS; k++) { s = (s + 1) % MAX_SEATS; if (winners.includes(s)) ordered.push(s); }
-        for (const w of ordered) { this.seats[w].chips += share + (odd > 0 ? 1 : 0); odd--; }
-        const pot = { amount, winners, hand: evals[winners[0]].name, side: i > 0 };
-        results.pots.push(pot);
-        const contested = levels.filter(L => live.filter(s => h.players[s].total >= L).length > 1).length;
         const label = contested > 1 ? (i === 0 ? 'the main pot' : `side pot ${i}`) : 'the pot';
-        this.say(`${winners.map(w => this.seats[w].name).join(' & ')} ${winners.length > 1 ? 'split' : 'wins'} ${label} (${amount}) with ${pot.hand}.`);
+        const parts = boards.length === 2 ? [Math.ceil(amount / 2), Math.floor(amount / 2)] : [amount];
+        parts.forEach((part, r) => {
+          if (part === 0) return;
+          const best = Math.max(...eligible.map(s => evals[r][s].score));
+          const winners = eligible.filter(s => evals[r][s].score === best);
+          const share = Math.floor(part / winners.length);
+          let odd = part - share * winners.length;
+          // odd chips go to the first winner(s) left of the button
+          let s = h.button;
+          for (let k = 0; k < MAX_SEATS; k++) {
+            s = (s + 1) % MAX_SEATS;
+            if (!winners.includes(s)) continue;
+            this.seats[s].chips += share + (odd > 0 ? 1 : 0); odd--;
+          }
+          for (const w of winners) for (const c of evals[r][w].cards) results.winCards[r].push(cardName(c));
+          const pot = { amount: part, winners, hand: evals[r][winners[0]].name, side: i > 0, run: boards.length === 2 ? r + 1 : null };
+          results.pots.push(pot);
+          const runLabel = pot.run ? ` on run ${pot.run}` : '';
+          const what = boards.length === 2 ? `half of ${label}` : label;
+          this.say(`${winners.map(w => this.seats[w].name).join(' & ')} ${winners.length > 1 ? 'split' : 'wins'} ${what} (${part})${runLabel} with ${pot.hand}.`);
+        });
       });
     }
     h.results = results;
@@ -382,18 +583,21 @@ class Table {
   view(token) {
     const h = this.hand;
     const me = this.playerByToken(token);
+    const done = h && h.street === 'done';
     const seats = this.seats.map((p, s) => {
       if (!p) return null;
       const hp = h && h.players[s];
       const shown = h && h.results && h.results.shown[s];
+      const hn = h && h.results && h.results.hands[s];
+      const hn2 = h && h.results && h.results.hands2[s];
       return {
-        seat: s, id: p.id, name: p.name, chips: p.chips, connected: p.connected,
-        net: p.chips + (hp ? hp.total : 0) * (h && h.street !== 'done' ? 1 : 0) - p.buyins * this.settings.startingStack,
+        seat: s, id: p.id, name: p.name, chips: p.chips, connected: p.connected, away: p.away,
+        net: p.chips + (hp && !done ? hp.total : 0) - p.buyins * this.settings.startingStack,
         inHand: !!hp, folded: hp ? hp.folded : false, allIn: hp ? hp.allIn : false,
         bet: hp ? hp.bet : 0,
-        hasCards: !!hp && !hp.folded && h.street !== 'done' || !!shown,
+        hasCards: (!!hp && !hp.folded && !done) || !!shown,
         shown: shown || null,
-        handName: h && h.results && h.results.hands[s] ? h.results.hands[s].name : null,
+        handName: hn ? (hn2 ? `${hn.name} · ${hn2.name}` : hn.name) : null,
         isButton: h ? h.button === s : false,
         isSB: h ? h.sbSeat === s : false,
         isBB: h ? h.bbSeat === s : false,
@@ -402,34 +606,49 @@ class Table {
     });
     let hand = null;
     if (h) {
-      const pot = Object.values(h.players).reduce((a, x) => a + x.total - (h.street === 'done' ? 0 : x.bet), 0);
+      const pot = Object.values(h.players).reduce((a, x) => a + x.total - (done ? 0 : x.bet), 0);
       hand = {
-        number: h.number, street: h.street, board: h.board.map(cardName),
+        number: h.number, street: h.street,
+        board: h.board.map(cardName),
+        board2: h.board2 ? h.board2.map(cardName) : null,
+        runs: h.runs,
+        rit: h.rit ? { pending: h.rit.pending, votes: h.rit.votes, deadline: h.rit.deadline, runs: h.rit.runs || null } : null,
         pot, currentBet: h.currentBet, toAct: h.toAct, deadline: h.deadline,
         results: h.results ? {
           showdown: h.results.showdown,
           pots: h.results.pots,
           winners: [...new Set(h.results.pots.filter(x => !x.returned).flatMap(x => x.winners))],
+          winCards: h.results.winCards.map(list => [...new Set(list)]),
         } : null,
-        winningCards: h.results && h.results.showdown
-          ? [...new Set(h.results.pots.filter(x => !x.returned).flatMap(x => x.winners.flatMap(w => h.results.hands[w].cards)))]
-          : [],
       };
     }
     const myHp = me && h && h.players[me.seat];
+    let strength = null;
+    if (myHp && !myHp.folded && !done) strength = currentHandName([...myHp.hole, ...h.board]);
+    const request = !me && this.requests.find(r => r.token === token);
     return {
       code: this.code,
       running: this.running,
+      started: this.handCount > 0,
       settings: this.settings,
       pendingBlinds: this.pendingBlinds,
       seats, hand,
-      log: this.log.slice(-40),
+      log: this.log.slice(-50),
+      requests: me && this.isHost(token) ? this.requests.map(r => ({ id: r.id, name: r.name, seat: r.seat })) : [],
       you: me ? {
-        id: me.id, seat: me.seat, isHost: me.token === this.hostToken,
+        id: me.id, seat: me.seat, isHost: this.isHost(token), away: me.away,
         hole: myHp ? myHp.hole.map(cardName) : [],
         folded: myHp ? myHp.folded : false,
+        strength,
+        preAction: me.preAction ? me.preAction.type : null,
+        canShow: !!(done && myHp && h.results && !h.results.shown[me.seat]),
         options: this.options(me.seat),
       } : null,
+      visitor: me ? null : {
+        pending: request ? request.seat : null,
+        denied: this.denied.has(token),
+        isHost: this.isHost(token),
+      },
       now: Date.now(),
     };
   }

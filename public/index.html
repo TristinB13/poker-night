@@ -39,6 +39,8 @@
       <label>Big blind<input id="bb" type="number" value="10" min="2"></label>
     </div>
     <label class="inline">Seconds per turn<input id="turn" type="number" value="30" min="10" max="300"></label>
+    <label class="check"><input id="approval" type="checkbox" checked> I approve each player who joins</label>
+    <label class="check"><input id="rit" type="checkbox"> Offer "run it twice" on all-ins</label>
     <button id="createBtn" class="btn gold wide">Create table</button>
   </section>
   <p id="lobbyErr" class="err" role="alert"></p>
@@ -62,6 +64,7 @@
       <div class="center">
         <div id="pot" class="pot"></div>
         <div id="board" class="board"></div>
+        <div id="board2" class="board hidden"></div>
         <div id="status" class="status"></div>
       </div>
       <div id="seats"></div>
@@ -81,6 +84,7 @@
     <h3>Standings</h3>
     <table class="standings"><tbody id="standings"></tbody></table>
     <div id="hostControls"></div>
+    <button id="awayBtn" class="btn wide">Go away</button>
     <button id="copyBtn" class="btn wide">Copy invite link</button>
     <button id="leaveBtn" class="btn danger wide">Leave table</button>
   </aside>
