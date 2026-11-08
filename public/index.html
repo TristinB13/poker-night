@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0e1a14">
+<title>Poker Night</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- Lobby -->
+<main id="lobby" class="lobby">
+  <div class="brand">
+    <div class="suits"><span>♠</span><span class="red">♥</span><span>♣</span><span class="red">♦</span></div>
+    <h1>Poker Night</h1>
+    <p>Private Texas Hold'em for you and your friends.</p>
+  </div>
+
+  <label class="field">Your name
+    <input id="name" maxlength="18" autocomplete="nickname" placeholder="e.g. Tristin">
+  </label>
+
+  <section class="card-panel">
+    <h2>Join a table</h2>
+    <div class="row">
+      <input id="code" maxlength="5" placeholder="Table code" autocapitalize="characters" autocomplete="off">
+      <button id="joinBtn" class="btn primary">Join</button>
+    </div>
+  </section>
+
+  <section class="card-panel">
+    <h2>Host a new table</h2>
+    <div class="grid3">
+      <label>Starting chips<input id="stack" type="number" value="1000" min="20"></label>
+      <label>Small blind<input id="sb" type="number" value="5" min="1"></label>
+      <label>Big blind<input id="bb" type="number" value="10" min="2"></label>
+    </div>
+    <label class="inline">Seconds per turn<input id="turn" type="number" value="30" min="10" max="300"></label>
+    <button id="createBtn" class="btn gold wide">Create table</button>
+  </section>
+  <p id="lobbyErr" class="err" role="alert"></p>
+  <p class="fine">Every hand is dealt from a freshly shuffled 52-card deck using a cryptographic random number generator, so the odds match a real, well-shuffled deck.</p>
+</main>
+
+<!-- Table -->
+<main id="game" class="game hidden">
+  <header class="topbar">
+    <button id="menuBtn" class="icon" aria-label="Menu">☰</button>
+    <div class="tableinfo">
+      <span class="code-pill" id="codePill" title="Copy invite link">Table <b id="tableCode"></b> ⧉</span>
+      <span id="blindsInfo" class="muted"></span>
+    </div>
+    <button id="logBtn" class="icon" aria-label="Hand log">☷</button>
+  </header>
+
+  <div class="felt-wrap">
+    <div id="felt" class="felt">
+      <div class="rail"></div>
+      <div class="center">
+        <div id="pot" class="pot"></div>
+        <div id="board" class="board"></div>
+        <div id="status" class="status"></div>
+      </div>
+      <div id="seats"></div>
+    </div>
+  </div>
+
+  <div id="hostBar" class="hostbar hidden"></div>
+
+  <footer id="actions" class="actions"></footer>
+
+  <aside id="logPanel" class="drawer right hidden">
+    <h3>Hand log</h3>
+    <ol id="log"></ol>
+  </aside>
+
+  <aside id="menuPanel" class="drawer left hidden">
+    <h3>Standings</h3>
+    <table class="standings"><tbody id="standings"></tbody></table>
+    <div id="hostControls"></div>
+    <button id="copyBtn" class="btn wide">Copy invite link</button>
+    <button id="leaveBtn" class="btn danger wide">Leave table</button>
+  </aside>
+  <div id="toast" class="toast"></div>
+</main>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
