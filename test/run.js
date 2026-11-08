@@ -72,10 +72,10 @@ function playGame(seed, nPlayers, hands, rit = false) {
       if (h.board2) twice++;
       if (h.results.pots.filter(p => !p.returned).length > 1) sidePots++;
       if (h.results.pots.some(p => p.winners.length > 1)) splits++;
-      assert.strictEqual(total(), start + (t.seats.filter(Boolean).reduce((a, p) => a + (p.buyins - 1), 0)) * t.settings.startingStack, 'chips conserved');
+      assert.strictEqual(total(), start + t.seats.filter(Boolean).reduce((a, p) => a + p.invested - t.settings.startingStack, 0), 'chips conserved');
       // rebuy busted players sometimes so games keep going
       for (const p of t.seats) if (p && p.chips === 0 && rnd() < 0.7) {
-        if (t.rebuy(p.token).pending) t.approve(t.requests.find(r => r.token === p.token && r.type === 'rebuy').id, true);
+        if (t.rebuy(p.token, 100 + Math.floor(rnd() * 2000)).pending) t.approve(t.requests.find(r => r.token === p.token && r.type === 'rebuy').id, true);
       }
       queue.length = 0;
       if (!t.startHand()) break;
@@ -92,7 +92,7 @@ function playGame(seed, nPlayers, hands, rit = false) {
     assert.ok(o, 'options for actor');
     // all chips accounted for mid-hand too
     assert.strictEqual(t.seats.filter(Boolean).reduce((a, q) => a + q.chips, 0) + Object.values(h.players).reduce((a, x) => a + x.total, 0),
-      start + t.seats.filter(Boolean).reduce((a, q) => a + (q.buyins - 1), 0) * t.settings.startingStack);
+      start + t.seats.filter(Boolean).reduce((a, q) => a + q.invested - t.settings.startingStack, 0));
     const r = rnd();
     let action;
     if (o.canRaise && r < 0.12) action = { type: 'allin' };
@@ -171,6 +171,29 @@ function playGame(seed, nPlayers, hands, rit = false) {
   ok(t.seats[1].chips === 500 && t.seats[1].buyins === 2, 'approved rebuy');
   t.seats[0].chips = 0;
   ok(t.rebuy('h').pending === false && t.seats[0].chips === 500, 'host rebuys without approval');
+  // chosen amounts
+  t.seats[1].chips = 0;
+  t.rebuy('a', 1234); ok(t.view('h').requests[0].amount === 1234, 'host sees requested amount');
+  t.approve(t.requests[0].id, true);
+  ok(t.seats[1].chips === 1234 && t.seats[1].invested === 500 + 500 + 1234, 'rebuy for chosen amount');
+  ok(t.view('a').seats[1].net === 1234 - 2234, 'standings use actual buy-ins');
+  t.seats[1].chips = 0;
+  assert.throws(() => t.rebuy('a', 5), /between/); passed++;
+  assert.throws(() => t.rebuy('a', 999999), /between/); passed++;
+  t.destroy();
+}
+
+// ---- chat ----
+{
+  const t = new Table({ code: 'C', hostToken: 'a', settings: {} });
+  t.sit('a', 'Amy', 0);
+  t.addChat('a', '  nice   hand  ');
+  ok(t.view('a').chat[0].text === 'nice hand' && t.view('a').chat[0].name === 'Amy', 'chat message stored and trimmed');
+  assert.throws(() => t.addChat('zz', 'hi'), /Sit down/); passed++;
+  assert.throws(() => t.addChat('a', '   '), /Type/); passed++;
+  for (let i = 0; i < 5; i++) t.addChat('a', 'x' + i);
+  assert.throws(() => t.addChat('a', 'spam'), /Slow down/); passed++;
+  ok(t.addChat.length === 2 && t.chat.every(m => m.text.length <= 200), 'chat length limit');
   t.destroy();
 }
 

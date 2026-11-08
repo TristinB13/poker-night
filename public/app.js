@@ -281,6 +281,9 @@ function render() {
     else if (isMe && you.strength) plate.appendChild(el('div', 'str', you.strength));
     if (h && h.toAct === i) { const t = el('div', 'timer'); t.dataset.timer = '1'; plate.appendChild(t); }
     seat.appendChild(plate);
+    // Latest chat message from this player pops up above their seat for a few seconds.
+    const last = recentChat(p.id);
+    if (last) seat.appendChild(el('div', 'say', last.text));
     if (p.chips > 0) {
       const side = chipStack(p.chips, portrait() ? 3 : 5);
       side.classList.add('stack-side', pos.x > 50 ? 'left' : 'right');
@@ -300,6 +303,7 @@ function render() {
   renderHost();
   renderLog();
   renderStandings();
+  renderChat();
   $('awayBtn').classList.toggle('hidden', !you);
   if (you) $('awayBtn').textContent = you.away ? "I'm back" : 'Go away (sit out)';
 }
@@ -392,7 +396,21 @@ function renderActions() {
         box.appendChild(button('Cancel', 'btn', () => emit('cancelRequest', { type: 'rebuy' })));
       } else {
         if (you.rebuyDenied) box.appendChild(el('div', 'pre-label', 'The host declined your rebuy.'));
-        box.appendChild(button((you.isHost ? 'Rebuy for ' : 'Ask to rebuy for ') + fmt(s.settings.startingStack), 'btn gold', () => emit('rebuy')));
+        // Pick how much to rebuy for: quick buttons plus any amount you type.
+        const lim = you.rebuyLimits, start = s.settings.startingStack;
+        const amt = Object.assign(el('input'), { type: 'number', min: lim.min, max: lim.max, step: 1, value: start, inputMode: 'numeric' });
+        const go = button('', 'btn gold');
+        const label = () => { go.textContent = (you.isHost ? 'Rebuy for ' : 'Ask to rebuy for ') + fmt(Math.floor(Number(amt.value) || 0)); };
+        amt.oninput = label; label();
+        go.onclick = () => emit('rebuy', { amount: amt.value });
+        const quick = el('div', 'presets');
+        for (const [txt, v] of [['½×', start / 2], ['1×', start], ['2×', start * 2], ['3×', start * 3]]) {
+          const val = Math.max(lim.min, Math.min(lim.max, Math.round(v)));
+          quick.appendChild(button(`${txt} ${fmt(val)}`, 'btn', () => { amt.value = val; label(); }));
+        }
+        const row = el('div', 'row rebuy-row');
+        row.append(amt, go);
+        box.append(el('div', 'pre-label', `Rebuy for any amount from ${fmt(lim.min)} to ${fmt(lim.max)}`), quick, row);
       }
     }
     else if (active && !me.inHand) box.appendChild(el('div', 'pre-label', "You'll be dealt in next hand."));
@@ -447,7 +465,7 @@ function renderHost() {
     for (const r of s.requests) {
       const row = el('div', 'req' + (r.type === 'rebuy' ? ' rebuy' : ''));
       row.appendChild(el('span', '', r.type === 'rebuy'
-        ? `${r.name} wants to rebuy for ${fmt(s.settings.startingStack)}`
+        ? `${r.name} wants to rebuy for ${fmt(r.amount || s.settings.startingStack)}`
         : `${r.name} wants to join (seat ${r.seat + 1})`));
       row.append(button(r.type === 'rebuy' ? 'Approve' : 'Let in', 'btn primary', () => emit('host', { type: 'approve', id: r.id, ok: true })),
         button('Decline', 'btn', () => emit('host', { type: 'approve', id: r.id, ok: false })));
@@ -534,13 +552,13 @@ requestAnimationFrame(tick);
 
 // drawers + buttons
 function toggle(id) {
-  for (const d of ['logPanel', 'menuPanel']) if (d !== id) $(d).classList.add('hidden');
+  for (const d of ['logPanel', 'menuPanel', 'chatPanel']) if (d !== id) $(d).classList.add('hidden');
   $(id).classList.toggle('hidden');
 }
 $('logBtn').onclick = () => toggle('logPanel');
 document.querySelectorAll('[data-close]').forEach(b => b.onclick = () => b.closest('.drawer').classList.add('hidden'));
 $('menuBtn').onclick = () => toggle('menuPanel');
-$('felt').onclick = e => { if (!e.target.closest('.open-seat')) { $('logPanel').classList.add('hidden'); $('menuPanel').classList.add('hidden'); } };
+$('felt').onclick = e => { if (!e.target.closest('.open-seat')) for (const d of ['logPanel', 'menuPanel', 'chatPanel']) $(d).classList.add('hidden'); };
 async function copyInvite() {
   const url = `${location.origin}/?t=${state.code}`;
   try { await navigator.clipboard.writeText(url); toast('Invite link copied'); }
@@ -641,6 +659,7 @@ const sfx = (() => {
     turn() { tone(660, 0.18, { vol: 0.12 }); tone(880, 0.3, { vol: 0.12, at: 0.14 }); },
     win() { [523, 659, 784, 1047].forEach((f, i) => tone(f, 0.25, { type: 'triangle', vol: 0.1, at: i * 0.09 })); },
     allin() { for (let i = 0; i < 5; i++) this.chips(i * 0.07); },
+    pop() { tone(880, 0.07, { vol: 0.08 }); tone(1320, 0.09, { vol: 0.07, at: 0.06 }); },
     tick() { tone(1200, 0.04, { type: 'square', vol: 0.04 }); },
     ding() { tone(988, 0.35, { vol: 0.1 }); tone(1319, 0.4, { vol: 0.07, at: 0.08 }); },
   };
@@ -681,6 +700,9 @@ function playSounds(prev, s) {
   // run-it-twice vote, join and rebuy requests
   if (s.you && h && h.rit && h.rit.pending && !(ph && ph.rit && ph.rit.pending)) sfx.ding();
   if (s.requests.length > (prev.requests ? prev.requests.length : 0)) sfx.ding();
+  // someone else sent a chat message
+  const lastChat = (s.chat || [])[s.chat.length - 1], prevLast = (prev.chat || [])[(prev.chat || []).length - 1];
+  if (lastChat && (!prevLast || lastChat.id > prevLast.id) && !(s.you && lastChat.pid === s.you.id)) sfx.pop();
 }
 
 $('soundBtn').textContent = sfx.on ? '🔊' : '🔇';
@@ -703,3 +725,59 @@ $('soundBtn').onclick = () => {
 // Re-lay out the table when the window is resized or a phone is rotated.
 let resizeT;
 window.addEventListener('resize', () => { clearTimeout(resizeT); resizeT = setTimeout(() => { if (state) { actionKey = ''; render(); } }, 150); });
+
+// ---------- chat ----------
+const SAY_MS = 6000;
+let chatSeen = 0, chatTimer = 0, chatRendered = '';
+function recentChat(pid) {
+  const list = (state.chat || []).filter(m => m.pid === pid);
+  const m = list[list.length - 1];
+  return m && now() - m.t < SAY_MS ? m : null;
+}
+function renderChat() {
+  const list = state.chat || [];
+  const open = !$('chatPanel').classList.contains('hidden');
+  const lastId = list.length ? list[list.length - 1].id : 0;
+  if (open) chatSeen = lastId;
+  if (!chatSeen && lastId && !renderChat.init) chatSeen = lastId; // don't flag old messages as unread on first load
+  renderChat.init = true;
+  const unread = list.filter(m => m.id > chatSeen && !(state.you && m.pid === state.you.id)).length;
+  $('chatBadge').textContent = unread > 9 ? '9+' : unread;
+  $('chatBadge').classList.toggle('hidden', !unread);
+  $('chatForm').classList.toggle('hidden', !state.you);
+
+  const key = lastId + '|' + list.length;
+  if (key !== chatRendered) {
+    chatRendered = key;
+    const box = $('chatList');
+    const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+    box.innerHTML = '';
+    if (!list.length) box.appendChild(el('div', 'chat-empty', state.you ? 'No messages yet. Say hi!' : 'No messages yet.'));
+    for (const m of list) {
+      const row = el('div', 'chat-msg' + (state.you && m.pid === state.you.id ? ' mine' : ''));
+      const t = new Date(m.t - clockOffset);
+      row.append(el('time', '', t.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })), el('b', '', m.name), document.createTextNode(m.text));
+      box.appendChild(row);
+    }
+    if (atBottom || open) box.scrollTop = box.scrollHeight;
+  }
+  // re-draw when the newest pop-up bubble should disappear
+  clearTimeout(chatTimer);
+  const newest = list[list.length - 1];
+  if (newest && now() - newest.t < SAY_MS) chatTimer = setTimeout(() => { actionKey = ''; render(); }, SAY_MS - (now() - newest.t) + 50);
+}
+$('chatBtn').onclick = () => {
+  toggle('chatPanel');
+  if (!$('chatPanel').classList.contains('hidden')) {
+    renderChat();
+    $('chatList').scrollTop = $('chatList').scrollHeight;
+    if (!matchMedia('(pointer: coarse)').matches) $('chatInput').focus();
+  }
+};
+$('chatForm').onsubmit = async e => {
+  e.preventDefault();
+  const text = $('chatInput').value.trim();
+  if (!text) return;
+  const r = await emit('chat', { text });
+  if (r.ok) $('chatInput').value = '';
+};

@@ -56,8 +56,9 @@ During the game:
 - **Show your cards:** after a hand ends, anyone whose cards weren't shown can tap **Show my cards**.
 - **Away:** ☰ menu → **Go away** to sit out. You aren't dealt in until you tap **I'm back**. If you go away during a hand, you check when you can and otherwise fold.
 - **☰ menu** also shows standings (each player's net win or loss), the invite link, and Leave table. The host gets Pause, Shuffle seats, Set blinds (new blinds start next hand), seconds per turn (starts with the next turn), and both options from the create screen.
+- **💬 Chat:** tap 💬 to open the table chat. New messages pop up above the sender's seat for a few seconds, and a red badge shows unread messages.
 - **☷** opens the hand log.
-- Players who run out of chips can **Ask to rebuy** for the starting amount. The host approves or declines each rebuy (the host's own rebuys go straight through). Standings count every rebuy.
+- Players who run out of chips can **Ask to rebuy** for any amount they choose, from one big blind up to 10× the starting stack, with quick buttons for ½×, 1×, 2× and 3× the starting stack. The host approves or declines each rebuy (the host's own rebuys go straight through). Standings count the actual amount of every rebuy.
 - **Dealing pace:** there's a short pause before each new street, and cards are dealt onto the table one at a time. All-in runouts pause a little longer between streets.
 - **Sounds** for dealing, chips, checks, folds, your turn, the last 5 seconds of your clock, wins, and host requests. Tap 🔊 at the top to mute; your choice is remembered.
 - If someone runs out of time, they check if they can, otherwise they fold. Players who drop off get a short clock so the game keeps moving. Refreshing the page or reopening the link puts you back in your seat.

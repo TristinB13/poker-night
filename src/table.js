@@ -26,6 +26,8 @@ class Table {
     this.hand = null;
     this.handCount = 0;
     this.log = [];
+    this.chat = [];            // table chat, newest last
+    this.chatId = 0;
     this.timers = new Set();
     this.turnTimer = null;
   }
@@ -41,6 +43,20 @@ class Table {
     this.timers.clear();
     clearTimeout(this.turnTimer);
   }
+  // Table chat: seated players only, short messages, with a simple flood limit.
+  addChat(token, text) {
+    const p = this.playerByToken(token);
+    if (!p) throw new Error('Sit down to chat.');
+    text = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+    if (!text) throw new Error('Type a message.');
+    const now = Date.now();
+    p.chatTimes = (p.chatTimes || []).filter(t => now - t < 10000);
+    if (p.chatTimes.length >= 6) throw new Error('Slow down a little.');
+    p.chatTimes.push(now);
+    this.chat.push({ id: ++this.chatId, t: now, pid: p.id, seat: p.seat, name: p.name, text });
+    if (this.chat.length > 100) this.chat.shift();
+  }
+
   say(msg) {
     this.log.push({ t: Date.now(), msg });
     if (this.log.length > 80) this.log.shift();
@@ -71,7 +87,7 @@ class Table {
     const p = {
       id: crypto.randomBytes(6).toString('hex'),
       token, name: String(name).slice(0, 18), seat,
-      chips: this.settings.startingStack, buyins: 1,
+      chips: this.settings.startingStack, buyins: 1, invested: this.settings.startingStack,
       connected: true, leaving: false, away: false, preAction: null,
     };
     this.seats[seat] = p;
@@ -111,7 +127,7 @@ class Table {
     if (r.type === 'rebuy') {
       const p = this.playerByToken(r.token);
       if (!p) return;
-      if (ok) this.doRebuy(p);
+      if (ok) this.doRebuy(p, r.amount);
       else { p.rebuyDenied = true; this.say(`Host declined ${p.name}'s rebuy.`); }
       return;
     }
@@ -143,27 +159,34 @@ class Table {
   }
   seatedCount() { return this.seats.filter(Boolean).length; }
 
-  // Players ask to rebuy; the host approves (the host's own rebuys go straight through).
-  rebuy(token) {
+  // Rebuys can be any amount from one big blind up to 10x the starting stack.
+  rebuyLimits() { return { min: this.bb, max: this.settings.startingStack * 10 }; }
+
+  // Players ask to rebuy for an amount they choose; the host approves (the host's own rebuys go straight through).
+  rebuy(token, amount) {
     const p = this.playerByToken(token);
     if (!p) throw new Error('Not seated.');
+    const { min, max } = this.rebuyLimits();
+    amount = amount === undefined || amount === null || amount === '' ? this.settings.startingStack : Math.floor(Number(amount));
+    if (!Number.isFinite(amount) || amount < min || amount > max) throw new Error(`Rebuy must be between ${min.toLocaleString()} and ${max.toLocaleString()}.`);
     if (p.chips > 0) throw new Error('You still have chips.');
     if (this.handActive() && this.hand.players[p.seat]) throw new Error('Wait for the hand to finish.');
     p.rebuyDenied = false;
     if (!this.isHost(token)) {
       if (!this.requests.some(r => r.token === token && r.type === 'rebuy')) {
-        this.requests.push({ id: crypto.randomBytes(6).toString('hex'), type: 'rebuy', token, name: p.name, t: Date.now() });
-        this.say(`${p.name} asked to rebuy.`);
+        this.requests.push({ id: crypto.randomBytes(6).toString('hex'), type: 'rebuy', token, name: p.name, amount, t: Date.now() });
+        this.say(`${p.name} asked to rebuy for ${amount}.`);
       }
       return { pending: true };
     }
-    this.doRebuy(p);
+    this.doRebuy(p, amount);
     return { pending: false };
   }
-  doRebuy(p) {
+  doRebuy(p, amount = this.settings.startingStack) {
     if (p.chips > 0) return;
-    p.chips = this.settings.startingStack;
+    p.chips = amount;
     p.buyins += 1;
+    p.invested += amount;
     this.say(`${p.name} rebought for ${p.chips}.`);
     if (this.running && !this.hand) this.schedule(() => this.startHand(), 500);
   }
@@ -620,7 +643,7 @@ class Table {
       const hn2 = h && h.results && h.results.hands2[s];
       return {
         seat: s, id: p.id, name: p.name, chips: p.chips, connected: p.connected, away: p.away,
-        net: p.chips + (hp && !done ? hp.total : 0) - p.buyins * this.settings.startingStack,
+        net: p.chips + (hp && !done ? hp.total : 0) - p.invested,
         inHand: !!hp, folded: hp ? hp.folded : false, allIn: hp ? hp.allIn : false,
         bet: hp ? hp.bet : 0,
         hasCards: (!!hp && !hp.folded && !done) || !!shown,
@@ -662,7 +685,8 @@ class Table {
       pendingBlinds: this.pendingBlinds,
       seats, hand,
       log: this.log.slice(-50),
-      requests: me && this.isHost(token) ? this.requests.map(r => ({ id: r.id, type: r.type || 'seat', name: r.name, seat: r.seat })) : [],
+      chat: this.chat.slice(-60),
+      requests: me && this.isHost(token) ? this.requests.map(r => ({ id: r.id, type: r.type || 'seat', name: r.name, seat: r.seat, amount: r.amount })) : [],
       you: me ? {
         id: me.id, seat: me.seat, isHost: this.isHost(token), away: me.away,
         hole: myHp ? myHp.hole.map(cardName) : [],
@@ -670,6 +694,7 @@ class Table {
         strength,
         preAction: me.preAction ? me.preAction.type : null,
         rebuyPending: this.requests.some(r => r.token === token && r.type === 'rebuy'),
+        rebuyLimits: this.rebuyLimits(),
         rebuyDenied: !!me.rebuyDenied,
         canShow: !!(done && myHp && h.results && !h.results.shown[me.seat]),
         options: this.options(me.seat),

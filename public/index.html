@@ -57,6 +57,7 @@
       <span id="blindsInfo" class="muted"></span>
     </div>
     <button id="soundBtn" class="icon" aria-label="Sound on/off">🔊</button>
+    <button id="chatBtn" class="icon chat-btn" aria-label="Chat">💬<span id="chatBadge" class="chat-badge hidden"></span></button>
     <button id="logBtn" class="icon" aria-label="Hand log">☷</button>
   </header>
 
@@ -82,6 +83,15 @@
   <aside id="logPanel" class="drawer right hidden">
     <div class="drawer-head"><h3>Hand log</h3><button class="icon close" data-close aria-label="Close">✕</button></div>
     <ol id="log"></ol>
+  </aside>
+
+  <aside id="chatPanel" class="drawer right chat-drawer hidden">
+    <div class="drawer-head"><h3>Table chat</h3><button class="icon close" data-close aria-label="Close">✕</button></div>
+    <div id="chatList" class="chat-list"></div>
+    <form id="chatForm" class="chat-form" autocomplete="off">
+      <input id="chatInput" maxlength="200" placeholder="Say something…" enterkeyhint="send">
+      <button class="btn primary" type="submit">Send</button>
+    </form>
   </aside>
 
   <aside id="menuPanel" class="drawer left hidden">
