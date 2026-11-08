@@ -174,6 +174,44 @@ function playGame(seed, nPlayers, hands, rit = false) {
   t.destroy();
 }
 
+// ---- bomb pots ----
+{
+  for (let i = 0; i < 300; i++) {
+    const t = new Table({ code: 'B', hostToken: 'a', settings: { startingStack: 1000, smallBlind: 5, bigBlind: 10, bombPot: true, bombAnteBB: 3, bombEvery: 0 }, delays: { street: 0, runout: 0, nextHand: 1e9, preAction: 0 } });
+    t.queue = []; t.schedule = fn => t.queue.push(fn);
+    t.sit('a', 'A', 0); t.sit('b', 'B', 3); t.sit('c', 'C', 5);
+    if (i === 0) t.seats[5].chips = 20; // short stack goes all-in on the ante
+    t.callBombPot(true);
+    t.running = true; t.startHand(); t.running = false;
+    const h = t.hand;
+    ok(h.bomb && h.sbSeat === -1 && h.street === 'preflop' && h.toAct === -1, 'bomb pot: no blinds, no preflop action');
+    const pot = Object.values(h.players).reduce((a, x) => a + x.total, 0);
+    ok(pot === (i === 0 ? 30 + 30 + 20 : 90), 'everyone antes 3 big blinds');
+    t.queue.shift()();
+    ok(h.street === 'flop' && h.board.length === 3 && h.pos === 6 + 1 + 3, 'flop dealt straight away (with burn)');
+    ok(h.toAct === t.nextSeat(h.button, s => h.players[s] && t.canAct(s)), 'action starts left of the button');
+    // play it out with checks/calls and confirm chips are conserved
+    let guard = 0;
+    while (h.street !== 'done' && guard++ < 200) {
+      if (h.toAct >= 0) { const o = t.options(h.toAct); t.act(t.seats[h.toAct].token, { type: o.canCheck ? (i % 3 ? 'check' : 'allin') : 'call' }); }
+      else t.queue.shift()();
+    }
+    const sum = t.seats.filter(Boolean).reduce((a, p) => a + p.chips, 0);
+    ok(h.street === 'done' && sum === (i === 0 ? 2020 : 3000), 'bomb pot chips conserved');
+    t.destroy();
+  }
+  // automatic every N hands
+  const t = new Table({ code: 'B2', hostToken: 'a', settings: { bombPot: true, bombEvery: 3 } });
+  t.handCount = 2;
+  ok(t.nextIsBomb(), 'every 3rd hand is a bomb pot');
+  t.handCount = 3;
+  ok(!t.nextIsBomb(), 'other hands are normal');
+  t.setOptions({ bombPot: false }); t.handCount = 2;
+  ok(!t.nextIsBomb(), 'turned off');
+  assert.throws(() => t.callBombPot(true), /Turn on/); passed++;
+  t.destroy();
+}
+
 // ---- new features ----
 function mk(settings = {}) {
   const t = new Table({ code: 'N', hostToken: 'h', settings: { startingStack: 1000, smallBlind: 5, bigBlind: 10, ...settings }, delays: { street: 0, runout: 0, nextHand: 1e9, preAction: 0 } });

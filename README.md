@@ -41,7 +41,7 @@ Notes on the free plan:
 
 ## How to play
 
-1. The host enters a name and chooses starting chips, blinds, and seconds per turn. Two options are also on this screen: **approve each player who joins** (on by default) and **offer "run it twice" on all-ins**. Then click **Create table**.
+1. The host enters a name and chooses starting chips, blinds, and seconds per turn. Three options are also on this screen: **approve each player who joins** (on by default), **offer "run it twice" on all-ins**, and **bomb pots**. Then click **Create table**.
 2. Tap the table code at the top to copy the invite link, and send it to your friends.
 3. Friends open the link, enter their name, and tap an open seat. If approval is on, the host sees "Jake wants to join" and taps **Let in** or **Decline**.
 4. Before the first hand, the host can **Shuffle seats** to randomize where everyone sits. Then press **Start game**.
@@ -51,6 +51,7 @@ During the game:
 - **Pre-select your move.** While waiting, tap Fold, Check, or Check / Fold, and it happens automatically when the action reaches you. A Check pre-select is cancelled if someone bets.
 - **Your hand** (Pair of Kings, Flush, and so on) shows under your name, updated as the board comes out. Only you can see it.
 - **Small blind, big blind, and dealer** are marked on the table, and the hand log records each blind posted.
+- **Bomb pots** (host setting, off by default): everyone antes a set number of big blinds, there's no preflop betting, and the flop comes straight out, with betting starting left of the dealer. In the ☰ menu the host sets the ante and how often bomb pots happen (every N hands, or 0 to only call them by hand), and can tap **💣 Bomb pot next hand** at any time.
 - **Run it twice:** when everyone left is all-in and the host turned this on, each player in the hand is asked. If everyone agrees, the rest of the board is dealt twice from the same deck, and each board wins half the pot. If anyone says no, or doesn't answer within 15 seconds, it's dealt once.
 - **Show your cards:** after a hand ends, anyone whose cards weren't shown can tap **Show my cards**.
 - **Away:** ☰ menu → **Go away** to sit out. You aren't dealt in until you tap **I'm back**. If you go away during a hand, you check when you can and otherwise fold.

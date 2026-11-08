@@ -55,7 +55,7 @@ $('joinBtn').onclick = () => enter('join', { code: $('code').value });
 $('code').onkeydown = e => { if (e.key === 'Enter') $('joinBtn').click(); };
 $('createBtn').onclick = () => enter('create', {
   startingStack: $('stack').value, smallBlind: $('sb').value, bigBlind: $('bb').value, turnSeconds: $('turn').value,
-  requireApproval: $('approval').checked, runItTwice: $('rit').checked,
+  requireApproval: $('approval').checked, runItTwice: $('rit').checked, bombPot: $('bomb').checked,
 });
 
 function showGame(on) {
@@ -87,7 +87,13 @@ function cardEl(name, extra = '') {
   const r = name[0] === 'T' ? '10' : name[0];
   const s = { s: '♠', h: '♥', d: '♦', c: '♣' }[name[1]];
   d.className = 'c ' + (name[1] === 'h' || name[1] === 'd' ? 'red ' : '') + extra;
-  d.innerHTML = `<span class="r">${r}</span><span class="s">${s}</span>`;
+  const FACE = { K: '♚', Q: '♛', J: '♞' };
+  const art = FACE[r] ? `<span class="face"><span>${FACE[r]}</span><em>${s}</em></span>`
+    : r === 'A' ? `<span class="ace">${s}</span>`
+    : `<span class="big">${s}</span>`;
+  d.innerHTML = `<span class="ix"><b${r === '10' ? ' class="ten"' : ''}>${r}</b><i>${s}</i></span>${art}`;
+  const RN = { A: 'Ace', K: 'King', Q: 'Queen', J: 'Jack' }, SN = { s: 'spades', h: 'hearts', d: 'diamonds', c: 'clubs' };
+  d.setAttribute('aria-label', `${RN[r] || r} of ${SN[name[1]]}`);
   return d;
 }
 
@@ -130,7 +136,8 @@ function render() {
   dealStagger = 0;
   $('tableCode').textContent = s.code;
   const pb = s.pendingBlinds ? ` → ${s.pendingBlinds.smallBlind}/${s.pendingBlinds.bigBlind} next hand` : '';
-  $('blindsInfo').textContent = `Blinds ${s.settings.smallBlind}/${s.settings.bigBlind}${pb}` + (h ? ` · Hand #${h.number}` : '');
+  $('blindsInfo').textContent = `Blinds ${s.settings.smallBlind}/${s.settings.bigBlind}${pb}` + (h ? ` · Hand #${h.number}` : '') +
+    (s.bombNext ? ' · 💣 bomb pot next' : '');
 
   // board(s) + pot
   const wc = h && h.results ? h.results.winCards : [[], []];
@@ -138,6 +145,7 @@ function render() {
   $('board2').classList.toggle('hidden', !(h && h.board2));
   if (h && h.board2) renderBoard('board2', h.board2, wc[1]);
   $('pot').textContent = h && h.pot ? `Pot ${fmt(h.pot)}` : '';
+  if (h && h.bomb && h.street !== 'done') $('pot').prepend(Object.assign(el('span', 'bomb-tag', '💣 BOMB POT'), { style: 'margin-right:8px' }));
   $('status').textContent = statusText();
 
   // seats
@@ -373,12 +381,24 @@ function renderHost() {
   const bb = Object.assign(el('input'), { type: 'number', value: s.settings.bigBlind, placeholder: 'BB' });
   row.append(sb, bb, button('Set blinds', 'btn', () => emit('host', { type: 'blinds', smallBlind: sb.value, bigBlind: bb.value })));
   hb.appendChild(row);
-  for (const [key, label] of [['requireApproval', 'Approve new players'], ['runItTwice', 'Offer run it twice on all-ins']]) {
+  for (const [key, label] of [['requireApproval', 'Approve new players'], ['runItTwice', 'Offer run it twice on all-ins'], ['bombPot', 'Bomb pots']]) {
     const lab = el('label', 'check');
     const cb = Object.assign(el('input'), { type: 'checkbox', checked: !!s.settings[key] });
     cb.onchange = () => emit('host', { type: 'options', [key]: cb.checked });
     lab.append(cb, document.createTextNode(label));
     hb.appendChild(lab);
+  }
+  if (s.settings.bombPot) {
+    const mini = el('div', 'mini');
+    const ante = Object.assign(el('input'), { type: 'number', min: 1, max: 100, value: s.settings.bombAnteBB });
+    const every = Object.assign(el('input'), { type: 'number', min: 0, value: s.settings.bombEvery });
+    const l1 = el('label', '', 'Ante (big blinds)'); l1.appendChild(ante);
+    const l2 = el('label', '', 'Every N hands (0 = manual)'); l2.appendChild(every);
+    mini.append(l1, l2, button('Save', 'btn', () => emit('host', { type: 'options', bombAnteBB: ante.value, bombEvery: every.value })));
+    hb.appendChild(mini);
+    hb.appendChild(s.bombNext
+      ? button('Cancel next bomb pot', 'btn wide', () => emit('host', { type: 'bomb', on: false }))
+      : button('💣 Bomb pot next hand', 'btn gold wide', () => emit('host', { type: 'bomb', on: true })));
   }
   box.appendChild(hb);
 }
@@ -428,6 +448,7 @@ function toggle(id) {
   $(id).classList.toggle('hidden');
 }
 $('logBtn').onclick = () => toggle('logPanel');
+document.querySelectorAll('[data-close]').forEach(b => b.onclick = () => b.closest('.drawer').classList.add('hidden'));
 $('menuBtn').onclick = () => toggle('menuPanel');
 $('felt').onclick = e => { if (!e.target.closest('.open-seat')) { $('logPanel').classList.add('hidden'); $('menuPanel').classList.add('hidden'); } };
 async function copyInvite() {
@@ -530,6 +551,7 @@ const sfx = (() => {
     turn() { tone(660, 0.18, { vol: 0.12 }); tone(880, 0.3, { vol: 0.12, at: 0.14 }); },
     win() { [523, 659, 784, 1047].forEach((f, i) => tone(f, 0.25, { type: 'triangle', vol: 0.1, at: i * 0.09 })); },
     allin() { for (let i = 0; i < 5; i++) this.chips(i * 0.07); },
+    boom() { tone(140, 0.6, { vol: 0.35, to: 40 }); noise(0.5, { vol: 0.3, freq: 400, to: 80, q: 0.5 }); },
     tick() { tone(1200, 0.04, { type: 'square', vol: 0.04 }); },
     ding() { tone(988, 0.35, { vol: 0.1 }); tone(1319, 0.4, { vol: 0.07, at: 0.08 }); },
   };
@@ -544,6 +566,7 @@ function playSounds(prev, s) {
 
   // new hand: the deal
   if (h && (!ph || ph.number !== h.number)) {
+    if (h.bomb) sfx.boom();
     const n = Object.keys(s.seats.filter(p => p && p.inHand)).length * 2;
     for (let i = 0; i < Math.min(n, 12); i++) sfx.deal(i * 0.09);
   }

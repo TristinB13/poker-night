@@ -61,6 +61,7 @@ io.on('connection', (socket) => {
       turnSeconds: num(data.turnSeconds, 10, 300, 30),
       runItTwice: !!data.runItTwice,
       requireApproval: data.requireApproval !== false,
+      bombPot: !!data.bombPot,
     };
     const table = new Table({ code, hostToken: token, settings, onUpdate: broadcast });
     tables.set(code, table);
@@ -121,7 +122,8 @@ io.on('connection', (socket) => {
     else if (data.type === 'blinds') t.setBlinds(data.smallBlind, data.bigBlind);
     else if (data.type === 'approve') t.approve(data.id, !!data.ok);
     else if (data.type === 'shuffle') t.shuffleSeats();
-    else if (data.type === 'options') t.setOptions({ runItTwice: data.runItTwice, requireApproval: data.requireApproval });
+    else if (data.type === 'options') t.setOptions({ runItTwice: data.runItTwice, requireApproval: data.requireApproval, bombPot: data.bombPot, bombAnteBB: data.bombAnteBB, bombEvery: data.bombEvery });
+    else if (data.type === 'bomb') t.callBombPot(data.on !== false);
     broadcast(t);
   }));
 

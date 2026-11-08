@@ -42,6 +42,7 @@
     <label class="inline">Seconds per turn<input id="turn" type="number" value="30" min="10" max="300"></label>
     <label class="check"><input id="approval" type="checkbox" checked> I approve each player who joins</label>
     <label class="check"><input id="rit" type="checkbox"> Offer "run it twice" on all-ins</label>
+    <label class="check"><input id="bomb" type="checkbox"> Bomb pots (set how often in the host menu)</label>
     <button id="createBtn" class="btn gold wide">Create table</button>
   </section>
   <p id="lobbyErr" class="err" role="alert"></p>
@@ -78,12 +79,12 @@
   <footer id="actions" class="actions"></footer>
 
   <aside id="logPanel" class="drawer right hidden">
-    <h3>Hand log</h3>
+    <div class="drawer-head"><h3>Hand log</h3><button class="icon close" data-close aria-label="Close">✕</button></div>
     <ol id="log"></ol>
   </aside>
 
   <aside id="menuPanel" class="drawer left hidden">
-    <h3>Standings</h3>
+    <div class="drawer-head"><h3>Standings</h3><button class="icon close" data-close aria-label="Close">✕</button></div>
     <table class="standings"><tbody id="standings"></tbody></table>
     <div id="hostControls"></div>
     <button id="awayBtn" class="btn wide">Go away</button>
