@@ -50,7 +50,7 @@ ok(H('Th Td 9c 9s 2h 2d Ac').score > H('Th Td 9c 9s 2h 2d Kc').score, 'two pair 
 // ---- simulated games ----
 function playGame(seed, nPlayers, hands, rit = false) {
   const rnd = (() => { let s = seed; return () => (s = (s * 1103515245 + 12345) % 2147483648) / 2147483648; })();
-  const t = new Table({ code: 'TEST', hostToken: 'p0', settings: { startingStack: 500 + Math.floor(rnd() * 1000), smallBlind: 5, bigBlind: 10, runItTwice: rit }, delays: { street: 0, nextHand: 0 } });
+  const t = new Table({ code: 'TEST', hostToken: 'p0', settings: { startingStack: 500 + Math.floor(rnd() * 1000), smallBlind: 5, bigBlind: 10, runItTwice: rit }, delays: { street: 0, runout: 0, nextHand: 0 } });
   const tokens = [];
   for (let i = 0; i < nPlayers; i++) { tokens.push('p' + i); t.sit('p' + i, 'P' + i); }
   // Run the engine synchronously: replace timers with a queue.
@@ -74,7 +74,9 @@ function playGame(seed, nPlayers, hands, rit = false) {
       if (h.results.pots.some(p => p.winners.length > 1)) splits++;
       assert.strictEqual(total(), start + (t.seats.filter(Boolean).reduce((a, p) => a + (p.buyins - 1), 0)) * t.settings.startingStack, 'chips conserved');
       // rebuy busted players sometimes so games keep going
-      for (const p of t.seats) if (p && p.chips === 0 && rnd() < 0.7) t.rebuy(p.token);
+      for (const p of t.seats) if (p && p.chips === 0 && rnd() < 0.7) {
+        if (t.rebuy(p.token).pending) t.approve(t.requests.find(r => r.token === p.token && r.type === 'rebuy').id, true);
+      }
       queue.length = 0;
       if (!t.startHand()) break;
       continue;
@@ -121,6 +123,7 @@ function playGame(seed, nPlayers, hands, rit = false) {
 // ---- rules spot checks ----
 {
   const t = new Table({ code: 'X', hostToken: 'a', settings: { startingStack: 1000, smallBlind: 5, bigBlind: 10 }, delays: { street: 0, nextHand: 1e9 } });
+  t.schedule = (fn, ms) => (ms < 1e6 ? fn() : null);
   t.sit('a', 'A'); t.sit('b', 'B');
   t.running = true; t.button = 1; // next button = seat 0
   t.startHand();
@@ -141,6 +144,7 @@ function playGame(seed, nPlayers, hands, rit = false) {
 {
   // short all-in does not reopen raising for a player who already acted
   const t = new Table({ code: 'Y', hostToken: 'a', settings: { startingStack: 1000, smallBlind: 5, bigBlind: 10 }, delays: { street: 0, nextHand: 1e9 } });
+  t.schedule = (fn, ms) => (ms < 1e6 ? fn() : null);
   t.sit('a', 'A'); t.sit('b', 'B'); t.sit('c', 'C');
   t.seats[2].chips = 140;
   t.running = true; t.button = 2; // button -> seat 0, SB 1, BB 2
@@ -154,9 +158,25 @@ function playGame(seed, nPlayers, hands, rit = false) {
   t.destroy();
 }
 
+// ---- rebuy approval ----
+{
+  const t = new Table({ code: 'R', hostToken: 'h', settings: { startingStack: 500 } });
+  t.sit('h', 'Host', 0); t.sit('a', 'Amy', 1);
+  t.seats[1].chips = 0; t.seats[0].chips = 1000;
+  ok(t.rebuy('a').pending === true && t.seats[1].chips === 0, 'rebuy waits for host');
+  ok(t.view('h').requests.some(r => r.type === 'rebuy') && t.view('a').you.rebuyPending, 'host sees rebuy request');
+  t.approve(t.view('h').requests[0].id, false);
+  ok(t.seats[1].chips === 0 && t.view('a').you.rebuyDenied, 'declined rebuy');
+  t.rebuy('a'); t.approve(t.requests[0].id, true);
+  ok(t.seats[1].chips === 500 && t.seats[1].buyins === 2, 'approved rebuy');
+  t.seats[0].chips = 0;
+  ok(t.rebuy('h').pending === false && t.seats[0].chips === 500, 'host rebuys without approval');
+  t.destroy();
+}
+
 // ---- new features ----
 function mk(settings = {}) {
-  const t = new Table({ code: 'N', hostToken: 'h', settings: { startingStack: 1000, smallBlind: 5, bigBlind: 10, ...settings }, delays: { street: 0, nextHand: 1e9, preAction: 0 } });
+  const t = new Table({ code: 'N', hostToken: 'h', settings: { startingStack: 1000, smallBlind: 5, bigBlind: 10, ...settings }, delays: { street: 0, runout: 0, nextHand: 1e9, preAction: 0 } });
   t.queue = []; t.schedule = fn => t.queue.push(fn);
   t.flush = () => { while (t.queue.length) t.queue.shift()(); };
   return t;

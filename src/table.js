@@ -15,7 +15,8 @@ class Table {
       runItTwice: false, requireApproval: true, ...settings,
     };
     this.pendingBlinds = null;
-    this.delays = { street: 900, nextHand: 6000, preAction: 350, ...delays };
+    // Pauses so the game feels like a live dealer: before each new street, between streets on an all-in runout, and between hands.
+    this.delays = { street: 1300, runout: 2200, nextHand: 6000, preAction: 350, ...delays };
     this.onUpdate = onUpdate;
     this.seats = new Array(MAX_SEATS).fill(null);
     this.requests = [];          // seat requests waiting for host approval
@@ -101,12 +102,19 @@ class Table {
     }
     return { seated: false };
   }
-  cancelRequest(token) { this.requests = this.requests.filter(r => r.token !== token); }
+  cancelRequest(token, type = 'seat') { this.requests = this.requests.filter(r => !(r.token === token && (r.type || 'seat') === type)); }
 
   approve(id, ok) {
     const r = this.requests.find(x => x.id === id);
     if (!r) throw new Error('That request is gone.');
     this.requests = this.requests.filter(x => x !== r);
+    if (r.type === 'rebuy') {
+      const p = this.playerByToken(r.token);
+      if (!p) return;
+      if (ok) this.doRebuy(p);
+      else { p.rebuyDenied = true; this.say(`Host declined ${p.name}'s rebuy.`); }
+      return;
+    }
     if (!ok) { this.denied.add(r.token); this.say(`Host declined ${r.name}.`); return; }
     const seat = this.seats[r.seat] ? this.seats.findIndex(s => s === null) : r.seat;
     if (seat < 0) throw new Error('Table is full.');
@@ -129,16 +137,31 @@ class Table {
   }
   removePlayer(p) {
     this.seats[p.seat] = null;
+    this.requests = this.requests.filter(r => r.token !== p.token);
     this.say(`${p.name} left the table.`);
     if (this.seatedCount() < 2 && !this.hand) this.running = false;
   }
   seatedCount() { return this.seats.filter(Boolean).length; }
 
+  // Players ask to rebuy; the host approves (the host's own rebuys go straight through).
   rebuy(token) {
     const p = this.playerByToken(token);
     if (!p) throw new Error('Not seated.');
     if (p.chips > 0) throw new Error('You still have chips.');
     if (this.handActive() && this.hand.players[p.seat]) throw new Error('Wait for the hand to finish.');
+    p.rebuyDenied = false;
+    if (!this.isHost(token)) {
+      if (!this.requests.some(r => r.token === token && r.type === 'rebuy')) {
+        this.requests.push({ id: crypto.randomBytes(6).toString('hex'), type: 'rebuy', token, name: p.name, t: Date.now() });
+        this.say(`${p.name} asked to rebuy.`);
+      }
+      return { pending: true };
+    }
+    this.doRebuy(p);
+    return { pending: false };
+  }
+  doRebuy(p) {
+    if (p.chips > 0) return;
     p.chips = this.settings.startingStack;
     p.buyins += 1;
     this.say(`${p.name} rebought for ${p.chips}.`);
@@ -416,9 +439,9 @@ class Table {
     if (actors.length < 2 && h.street !== 'river') {
       // Everyone left is all-in. Offer to run it twice (if the host turned it on), then run the board out.
       if (this.settings.runItTwice && h.runs === null) return this.startRitVote(live);
-      this.schedule(() => this.nextStreet(), this.delays.street);
+      this.schedule(() => this.nextStreet(), this.delays.runout);
     } else {
-      this.nextStreet();
+      this.schedule(() => this.nextStreet(), this.delays.street);
     }
   }
 
@@ -463,7 +486,7 @@ class Table {
     h.ritBase = h.board.slice();
     this.say(runs === 2 ? 'Everyone agreed — running it twice.' : 'Running it once.');
     this.changed();
-    this.schedule(() => this.nextStreet(), this.delays.street);
+    this.schedule(() => this.nextStreet(), this.delays.runout);
   }
   // Deal the second board from the same deck, picking up where the first left off (burns included).
   dealSecondRun() {
@@ -489,7 +512,7 @@ class Table {
       if (h.runs === 2 && !h.board2) {
         this.dealSecondRun();
         this.changed();
-        return this.schedule(() => this.finish(live, true), this.delays.street);
+        return this.schedule(() => this.finish(live, true), this.delays.runout);
       }
       return this.finish(live, true);
     }
@@ -625,7 +648,7 @@ class Table {
     const myHp = me && h && h.players[me.seat];
     let strength = null;
     if (myHp && !myHp.folded && !done) strength = currentHandName([...myHp.hole, ...h.board]);
-    const request = !me && this.requests.find(r => r.token === token);
+    const request = !me && this.requests.find(r => r.token === token && r.type !== 'rebuy');
     return {
       code: this.code,
       running: this.running,
@@ -634,13 +657,15 @@ class Table {
       pendingBlinds: this.pendingBlinds,
       seats, hand,
       log: this.log.slice(-50),
-      requests: me && this.isHost(token) ? this.requests.map(r => ({ id: r.id, name: r.name, seat: r.seat })) : [],
+      requests: me && this.isHost(token) ? this.requests.map(r => ({ id: r.id, type: r.type || 'seat', name: r.name, seat: r.seat })) : [],
       you: me ? {
         id: me.id, seat: me.seat, isHost: this.isHost(token), away: me.away,
         hole: myHp ? myHp.hole.map(cardName) : [],
         folded: myHp ? myHp.folded : false,
         strength,
         preAction: me.preAction ? me.preAction.type : null,
+        rebuyPending: this.requests.some(r => r.token === token && r.type === 'rebuy'),
+        rebuyDenied: !!me.rebuyDenied,
         canShow: !!(done && myHp && h.results && !h.results.shown[me.seat]),
         options: this.options(me.seat),
       } : null,

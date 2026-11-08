@@ -73,8 +73,10 @@ socket.on('connect', async () => {
 });
 
 socket.on('state', s => {
+  const prev = state;
   state = s;
   clockOffset = s.now - Date.now();
+  playSounds(prev, s);
   render();
 });
 
@@ -102,17 +104,30 @@ function seatPos(seat) {
   return { x: 50 + 50 * Math.cos(a), y: 50 + 50 * Math.sin(a), bx: 50 + 30 * Math.cos(a), by: 50 + 27 * Math.sin(a) };
 }
 
+// Cards animate in only the first time they appear, one after another like a dealer.
+const seenCards = new Set();
+let dealStagger = 0;
+function dealIn(node, key, step = 0.22) {
+  if (seenCards.has(key)) return node;
+  seenCards.add(key);
+  node.classList.add('new');
+  node.style.animationDelay = dealStagger + 's';
+  dealStagger += step;
+  return node;
+}
 function renderBoard(id, cards, winList) {
   const box = $(id); box.innerHTML = '';
   const win = new Set(winList || []);
+  const hn = state.hand ? state.hand.number : 0;
   for (let i = 0; i < 5; i++) {
     const c = cards && cards[i];
-    box.appendChild(c ? cardEl(c, win.size ? (win.has(c) ? 'win' : 'dim') : '') : el('div', 'c slot'));
+    box.appendChild(c ? dealIn(cardEl(c, win.size ? (win.has(c) ? 'win' : 'dim') : ''), `${hn}:${id}:${i}:${c}`) : el('div', 'c slot'));
   }
 }
 
 function render() {
   const s = state, h = s.hand, you = s.you;
+  dealStagger = 0;
   $('tableCode').textContent = s.code;
   const pb = s.pendingBlinds ? ` → ${s.pendingBlinds.smallBlind}/${s.pendingBlinds.bigBlind} next hand` : '';
   $('blindsInfo').textContent = `Blinds ${s.settings.smallBlind}/${s.settings.bigBlind}${pb}` + (h ? ` · Hand #${h.number}` : '');
@@ -147,11 +162,11 @@ function render() {
     const hole = el('div', 'hole');
     const done = h && h.street === 'done';
     if (isMe && you.hole.length && !(done && p.folded && !p.shown)) {
-      you.hole.forEach(c => hole.appendChild(cardEl(c, winAll.size ? (winAll.has(c) ? 'win' : 'dim') : (you.folded ? 'dim' : ''))));
+      you.hole.forEach((c, k) => hole.appendChild(dealIn(cardEl(c, winAll.size ? (winAll.has(c) ? 'win' : 'dim') : (you.folded ? 'dim' : '')), `${h ? h.number : 0}:hole:${i}:${k}`, 0.12)));
     } else if (p.shown) {
       p.shown.forEach(c => hole.appendChild(cardEl(c, winAll.has(c) ? 'win' : winAll.size ? 'dim' : '')));
     } else if (p.hasCards) {
-      hole.appendChild(cardEl(null)); hole.appendChild(cardEl(null));
+      [0, 1].forEach(k => hole.appendChild(dealIn(cardEl(null), `${h ? h.number : 0}:hole:${i}:${k}`, 0.12)));
     }
     seat.appendChild(hole);
 
@@ -215,7 +230,7 @@ function renderActions() {
   const ritMine = !!(you && h && h.rit && h.rit.pending && h.rit.votes[you.seat] === null);
   const key = JSON.stringify(o
     ? ['turn', h.number, h.street, h.toAct, h.currentBet, me.chips]
-    : [ritMine, you && you.away, you && you.canShow, you && you.preAction, me && [me.inHand, me.folded, me.allIn, me.chips],
+    : [ritMine, you && you.away, you && you.canShow, you && you.preAction, you && you.rebuyPending, you && you.rebuyDenied, me && [me.inHand, me.folded, me.allIn, me.chips],
        h && [h.number, h.street], s.visitor, s.running]);
   if (key === actionKey) return;
   actionKey = key;
@@ -266,7 +281,15 @@ function renderActions() {
     box.appendChild(row);
   } else {
     if (h && h.street === 'done' && you.canShow) box.appendChild(button('Show my cards', 'btn', () => emit('show')));
-    if (me.chips === 0 && !(active && me.inHand)) box.appendChild(button('Rebuy for ' + fmt(s.settings.startingStack), 'btn gold', () => emit('rebuy')));
+    if (me.chips === 0 && !(active && me.inHand)) {
+      if (you.rebuyPending) {
+        box.appendChild(el('div', 'q', 'Waiting for the host to approve your rebuy…'));
+        box.appendChild(button('Cancel', 'btn', () => emit('cancelRequest', { type: 'rebuy' })));
+      } else {
+        if (you.rebuyDenied) box.appendChild(el('div', 'pre-label', 'The host declined your rebuy.'));
+        box.appendChild(button((you.isHost ? 'Rebuy for ' : 'Ask to rebuy for ') + fmt(s.settings.startingStack), 'btn gold', () => emit('rebuy')));
+      }
+    }
     else if (active && !me.inHand) box.appendChild(el('div', 'pre-label', "You'll be dealt in next hand."));
     else if (active && me.allIn) box.appendChild(el('div', 'pre-label', "You're all-in."));
   }
@@ -317,9 +340,11 @@ function renderHost() {
   if (s.requests.length) {
     const list = el('div', 'requests');
     for (const r of s.requests) {
-      const row = el('div', 'req');
-      row.appendChild(el('span', '', `${r.name} wants to join (seat ${r.seat + 1})`));
-      row.append(button('Let in', 'btn primary', () => emit('host', { type: 'approve', id: r.id, ok: true })),
+      const row = el('div', 'req' + (r.type === 'rebuy' ? ' rebuy' : ''));
+      row.appendChild(el('span', '', r.type === 'rebuy'
+        ? `${r.name} wants to rebuy for ${fmt(s.settings.startingStack)}`
+        : `${r.name} wants to join (seat ${r.seat + 1})`));
+      row.append(button(r.type === 'rebuy' ? 'Approve' : 'Let in', 'btn primary', () => emit('host', { type: 'approve', id: r.id, ok: true })),
         button('Decline', 'btn', () => emit('host', { type: 'approve', id: r.id, ok: false })));
       list.appendChild(row);
     }
@@ -388,6 +413,8 @@ function tick() {
     const pct = Math.max(0, Math.min(1, left / (state.settings.turnSeconds * 1000)));
     bar.style.width = (pct * 100) + '%';
     bar.style.background = pct < .25 ? 'var(--red)' : '';
+    const secs = Math.ceil(left / 1000);
+    if (state.you && h.toAct === state.you.seat && secs <= 5 && secs > 0 && secs !== tick.last) { tick.last = secs; sfx.tick(); }
   }
   const q = document.querySelector('[data-rit]');
   if (q && h && h.rit && h.rit.pending) q.textContent = `All-in — run it twice? (${Math.max(0, Math.ceil((h.rit.deadline - now()) / 1000))}s)`;
@@ -419,4 +446,107 @@ $('leaveBtn').onclick = async () => {
   history.replaceState(null, '', '/');
   $('menuPanel').classList.add('hidden');
   showGame(false);
+};
+
+// ---------- sounds (generated in the browser, no files needed) ----------
+const sfx = (() => {
+  let ctx = null;
+  let on = load('pn_sound') !== 'off';
+  const unlock = () => {
+    try {
+      if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+      if (ctx.state === 'suspended') ctx.resume();
+    } catch {}
+  };
+  window.addEventListener('pointerdown', unlock, { capture: true });
+  window.addEventListener('keydown', unlock, { capture: true });
+  const ready = () => on && ctx && ctx.state === 'running';
+
+  function tone(freq, dur, { type = 'sine', vol = 0.12, at = 0, to = null } = {}) {
+    if (!ready()) return;
+    const t0 = ctx.currentTime + at;
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type;
+    o.frequency.setValueAtTime(freq, t0);
+    if (to) o.frequency.exponentialRampToValueAtTime(to, t0 + dur);
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(vol, t0 + 0.008);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    o.connect(g).connect(ctx.destination);
+    o.start(t0); o.stop(t0 + dur + 0.02);
+  }
+  function noise(dur, { vol = 0.15, at = 0, freq = 2500, q = 0.8, to = null } = {}) {
+    if (!ready()) return;
+    const t0 = ctx.currentTime + at;
+    const len = Math.ceil(ctx.sampleRate * dur);
+    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
+    const src = ctx.createBufferSource(); src.buffer = buf;
+    const f = ctx.createBiquadFilter(); f.type = 'bandpass'; f.Q.value = q;
+    f.frequency.setValueAtTime(freq, t0);
+    if (to) f.frequency.exponentialRampToValueAtTime(to, t0 + dur);
+    const g = ctx.createGain(); g.gain.value = vol;
+    src.connect(f).connect(g).connect(ctx.destination);
+    src.start(t0);
+  }
+  return {
+    get on() { return on; },
+    toggle() { on = !on; store('pn_sound', on ? 'on' : 'off'); unlock(); return on; },
+    deal(at = 0) { noise(0.07, { vol: 0.35, at, freq: 3200, q: 1.2 }); },
+    chips(at = 0) { tone(2400, 0.06, { type: 'triangle', vol: 0.07, at }); tone(3100, 0.07, { type: 'triangle', vol: 0.06, at: at + 0.05 }); tone(2700, 0.08, { type: 'triangle', vol: 0.05, at: at + 0.1 }); },
+    check() { tone(180, 0.07, { vol: 0.25 }); tone(170, 0.07, { vol: 0.22, at: 0.12 }); },
+    fold() { noise(0.22, { vol: 0.18, freq: 1800, to: 500 }); },
+    turn() { tone(660, 0.18, { vol: 0.12 }); tone(880, 0.3, { vol: 0.12, at: 0.14 }); },
+    win() { [523, 659, 784, 1047].forEach((f, i) => tone(f, 0.25, { type: 'triangle', vol: 0.1, at: i * 0.09 })); },
+    allin() { for (let i = 0; i < 5; i++) this.chips(i * 0.07); },
+    tick() { tone(1200, 0.04, { type: 'square', vol: 0.04 }); },
+    ding() { tone(988, 0.35, { vol: 0.1 }); tone(1319, 0.4, { vol: 0.07, at: 0.08 }); },
+  };
+})();
+
+const heardLog = new Set();
+function playSounds(prev, s) {
+  const fresh = s.log.filter(e => !heardLog.has(e.t + '|' + e.msg));
+  for (const e of s.log) heardLog.add(e.t + '|' + e.msg);
+  if (!prev) return; // don't replay history when you first open the table
+  const h = s.hand, ph = prev.hand;
+
+  // new hand: the deal
+  if (h && (!ph || ph.number !== h.number)) {
+    const n = Object.keys(s.seats.filter(p => p && p.inHand)).length * 2;
+    for (let i = 0; i < Math.min(n, 12); i++) sfx.deal(i * 0.09);
+  }
+  // board cards
+  const pb = ph && h && ph.number === h.number ? ph.board.length + (ph.board2 ? ph.board2.length : 0) : 0;
+  const nb = h ? h.board.length + (h.board2 ? h.board2.length : 0) : 0;
+  for (let i = 0; i < Math.max(0, nb - pb); i++) sfx.deal(i * 0.22);
+
+  let won = false;
+  for (const e of fresh) {
+    const m = e.msg;
+    if (/all-in\)/.test(m) && /calls|raises|bets/.test(m)) sfx.allin();
+    else if (/ (calls|bets|raises to|posts) /.test(m)) sfx.chips();
+    else if (/ checks\./.test(m)) sfx.check();
+    else if (/ folds\./.test(m)) sfx.fold();
+    else if (/ (wins|split) /.test(m)) won = true;
+  }
+  if (won) sfx.win();
+
+  // your turn
+  const mine = s.you && h && h.toAct === s.you.seat;
+  const wasMine = !!(h && prev.you && ph && ph.toAct === prev.you.seat && ph.number === h.number && ph.street === h.street);
+  if (mine && !wasMine) sfx.turn();
+  // run-it-twice vote, join and rebuy requests
+  if (s.you && h && h.rit && h.rit.pending && !(ph && ph.rit && ph.rit.pending)) sfx.ding();
+  if (s.requests.length > (prev.requests ? prev.requests.length : 0)) sfx.ding();
+}
+
+$('soundBtn').textContent = sfx.on ? '🔊' : '🔇';
+$('soundBtn').classList.toggle('muted', !sfx.on);
+$('soundBtn').onclick = () => {
+  const on = sfx.toggle();
+  $('soundBtn').textContent = on ? '🔊' : '🔇';
+  $('soundBtn').classList.toggle('muted', !on);
+  toast(on ? 'Sound on' : 'Sound off');
 };

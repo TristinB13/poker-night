@@ -94,7 +94,7 @@ io.on('connection', (socket) => {
     broadcast(t);
     return r;
   }));
-  socket.on('cancelRequest', (_d, cb) => reply(cb, () => { const t = current(); t.cancelRequest(socket.data.token); broadcast(t); }));
+  socket.on('cancelRequest', (data, cb) => reply(cb, () => { const t = current(); t.cancelRequest(socket.data.token, data && data.type === 'rebuy' ? 'rebuy' : 'seat'); broadcast(t); }));
 
   socket.on('action', (data, cb) => reply(cb, () => {
     current().act(socket.data.token, { type: data.type, amount: data.amount });
@@ -103,7 +103,7 @@ io.on('connection', (socket) => {
   socket.on('away', (data, cb) => reply(cb, () => { const t = current(); t.setAway(socket.data.token, data.on); broadcast(t); }));
   socket.on('show', (_d, cb) => reply(cb, () => { const t = current(); t.showCards(socket.data.token); broadcast(t); }));
   socket.on('rit', (data, cb) => reply(cb, () => { const t = current(); t.ritVote(socket.data.token, data.yes); broadcast(t); }));
-  socket.on('rebuy', (_d, cb) => reply(cb, () => { const t = current(); t.rebuy(socket.data.token); broadcast(t); }));
+  socket.on('rebuy', (_d, cb) => reply(cb, () => { const t = current(); const r = t.rebuy(socket.data.token); broadcast(t); return r; }));
 
   socket.on('leave', (_d, cb) => reply(cb, () => {
     const t = current();
