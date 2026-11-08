@@ -1,0 +1,20 @@
+{
+  "name": "poker-night",
+  "version": "1.0.0",
+  "description": "Private Texas Hold'em for friends, with a fair cryptographic shuffle.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/run.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "socket.io": "^4.8.1"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.8.1"
+  }
+}
