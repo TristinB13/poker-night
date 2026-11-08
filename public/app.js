@@ -81,17 +81,41 @@ socket.on('state', s => {
 });
 
 // ---------- table ----------
+// ---------- suit symbols: drawn as vector shapes so they look the same on every device ----------
+const SUIT_PATHS = {
+  h: '<path d="M50 90C22 68 5 51 5 31 5 16 16 6 29 6c10 0 17 6 21 14C54 12 61 6 71 6c13 0 24 10 24 25 0 20-17 37-45 59z"/>',
+  d: '<path d="M50 3 89 50 50 97 11 50z"/>',
+  s: '<path d="M50 5C41 24 7 41 7 62c0 14 11 23 23 23 8 0 14-3 17-9-1 9-6 15-14 20h34c-8-5-13-11-14-20 3 6 9 9 17 9 12 0 23-9 23-23C93 41 59 24 50 5z"/>',
+  c: '<circle cx="50" cy="28" r="20"/><circle cx="27" cy="59" r="20"/><circle cx="73" cy="59" r="20"/><circle cx="50" cy="52" r="11"/><path d="M46 58c0 18-5 29-14 38h36c-9-9-14-20-14-38z"/>',
+};
+document.body.insertAdjacentHTML('afterbegin', '<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>' +
+  Object.entries(SUIT_PATHS).map(([k, d]) => `<symbol id="su-${k}" viewBox="0 0 100 100">${d}</symbol>`).join('') + '</defs></svg>');
+const suitSvg = (k, cls = '') => `<svg class="sv ${cls}" viewBox="0 0 100 100" aria-hidden="true"><use href="#su-${k}"/></svg>`;
+
 function cardEl(name, extra = '') {
   const d = el('div');
   if (!name) { d.className = 'c back ' + extra; return d; }
   const r = name[0] === 'T' ? '10' : name[0];
   const s = { s: '♠', h: '♥', d: '♦', c: '♣' }[name[1]];
   d.className = 'c ' + (name[1] === 'h' || name[1] === 'd' ? 'red ' : '') + extra;
-  const FACE = { K: '♚', Q: '♛', J: '♞' };
-  const art = FACE[r] ? `<span class="face"><span>${FACE[r]}</span><em>${s}</em></span>`
-    : r === 'A' ? `<span class="ace">${s}</span>`
-    : `<span class="big">${s}</span>`;
-  d.innerHTML = `<span class="ix"><b${r === '10' ? ' class="ten"' : ''}>${r}</b><i>${s}</i></span>${art}`;
+  // Classic deck: corner indexes plus the real pip pattern (x%, y% within the pip area; flipped pips point down).
+  const PIPS = {
+    2: [[50, 0], [50, 100, 1]], 3: [[50, 0], [50, 50], [50, 100, 1]],
+    4: [[0, 0], [100, 0], [0, 100, 1], [100, 100, 1]],
+    5: [[0, 0], [100, 0], [50, 50], [0, 100, 1], [100, 100, 1]],
+    6: [[0, 0], [100, 0], [0, 50], [100, 50], [0, 100, 1], [100, 100, 1]],
+    7: [[0, 0], [100, 0], [50, 25], [0, 50], [100, 50], [0, 100, 1], [100, 100, 1]],
+    8: [[0, 0], [100, 0], [50, 25], [0, 50], [100, 50], [50, 75, 1], [0, 100, 1], [100, 100, 1]],
+    9: [[0, 0], [100, 0], [0, 33], [100, 33], [50, 50], [0, 67, 1], [100, 67, 1], [0, 100, 1], [100, 100, 1]],
+    10: [[0, 0], [100, 0], [50, 17], [0, 33], [100, 33], [0, 67, 1], [100, 67, 1], [50, 83, 1], [0, 100, 1], [100, 100, 1]],
+  };
+  const k = name[1];
+  const ix = cls => `<span class="ix ${cls}"><b${r === '10' ? ' class="ten"' : ''}>${r}</b>${suitSvg(k)}</span>`;
+  let body;
+  if (r === 'A') body = `<span class="pips"><span class="pip ace" style="left:50%;top:50%">${suitSvg(k)}</span></span>`;
+  else if ('KQJ'.includes(r)) body = `<span class="court"><span class="crown">${{ K: '♚', Q: '♛', J: '♞' }[r]}</span><b>${r}</b>${suitSvg(k, 'cs')}</span>`;
+  else body = `<span class="pips">${PIPS[+r].map(([x, y, f]) => `<span class="pip${f ? ' flip' : ''}" style="left:${x}%;top:${y}%">${suitSvg(k)}</span>`).join('')}</span>`;
+  d.innerHTML = ix('tl') + body + ix('br') + `<span class="mini">${suitSvg(k)}</span>`;
   const RN = { A: 'Ace', K: 'King', Q: 'Queen', J: 'Jack' }, SN = { s: 'spades', h: 'hearts', d: 'diamonds', c: 'clubs' };
   d.setAttribute('aria-label', `${RN[r] || r} of ${SN[name[1]]}`);
   return d;
