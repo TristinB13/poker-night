@@ -68,7 +68,7 @@ input:focus { border-color: var(--gold); }
 .center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; pointer-events: none; }
 .pot { font-weight: 700; font-size: 14px; background: rgba(0,0,0,.35); padding: 4px 12px; border-radius: 999px; min-height: 1em; }
 .pot:empty { visibility: hidden; }
-.board { display: flex; gap: 5px; min-height: calc(var(--cw) * 1.4); --cw: clamp(34px, 6.5vw, 66px); }
+.board { display: flex; gap: 6px; min-height: calc(var(--cw) * 1.4); --cw: clamp(42px, 7.6vw, 76px); position: relative; }
 .status { font-size: 13px; color: #d7eadf; text-align: center; max-width: 80%; min-height: 1.2em; text-shadow: 0 1px 2px #000; }
 
 /* ---------- cards ---------- */
@@ -77,7 +77,7 @@ input:focus { border-color: var(--gold); }
   background: #fff; border: 1px solid #cfcfcf; position: relative; overflow: hidden; line-height: 1;
   font-family: Georgia, 'Times New Roman', serif; box-shadow: 0 2px 6px rgba(0,0,0,.45);
   container-type: size; }
-.c.new { animation: deal .55s cubic-bezier(.2,.8,.3,1) both; }
+.c.new { animation: deal .7s cubic-bezier(.2,.8,.3,1) both; }
 .c.red { color: #cc1424; }
 /* corner indexes, top-left and (upside down) bottom-right */
 .c .ix { position: absolute; display: flex; flex-direction: column; align-items: center; width: 22%; font-weight: 700; }
@@ -102,7 +102,7 @@ input:focus { border-color: var(--gold); }
 .c .court .cs { font-size: calc(var(--cw) * .18); }
 /* small cards (opponents, phones): drop the pips and show a big index and one large suit */
 .c .mini { display: none; }
-@container (max-width: 46px) {
+@container (max-width: 47px) {
   .pips, .court { display: none !important; }
   .ix.br { display: none; }
   .ix.tl { width: auto; left: 7%; top: 5%; }
@@ -123,9 +123,9 @@ input:focus { border-color: var(--gold); }
 @keyframes deal { from { transform: translateY(-28px) rotate(-6deg) scale(.85); opacity: 0; } 60% { opacity: 1; } }
 
 /* ---------- seats ---------- */
-.seat { position: absolute; transform: translate(-50%, -50%); width: clamp(92px, 15vw, 132px); display: flex; flex-direction: column; align-items: center; --cw: clamp(26px, 4vw, 38px); }
+.seat { position: absolute; transform: translate(-50%, -50%); width: clamp(92px, 15vw, 132px); display: flex; flex-direction: column; align-items: center; --cw: clamp(32px, 4.8vw, 46px); }
 .seat .hole { display: flex; gap: 3px; margin-bottom: 4px; z-index: 1; min-height: calc(var(--cw) * 1.4); }
-.seat.me .hole { --cw: clamp(40px, 7vw, 64px); margin-bottom: 4px; }
+.seat.me .hole { --cw: clamp(50px, 8.4vw, 76px); margin-bottom: 4px; }
 .plate { position: relative; z-index: 2; width: 100%; background: rgba(10,20,15,.92); border: 1px solid var(--line); border-radius: 12px; padding: 6px 8px; text-align: center; overflow: hidden; }
 .plate .nm { font-size: 13px; font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 4px; white-space: nowrap; }
 .plate .nm .who { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
@@ -183,7 +183,7 @@ input:focus { border-color: var(--gold); }
 .check { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--ink); cursor: pointer; }
 .check input { width: 18px; height: 18px; padding: 0; accent-color: var(--gold); }
 .board.second { margin-top: -2px; }
-.board .run-label { align-self: center; font-size: 11px; color: var(--muted); width: 0; white-space: nowrap; transform: translateX(-38px); }
+.board .run-label { position: absolute; right: calc(100% + 8px); top: 50%; transform: translateY(-50%); font-size: 11px; font-weight: 700; color: var(--muted); white-space: nowrap; }
 .tag.blind { left: -8px; right: auto; width: auto; padding: 0 6px; border-radius: 999px; background: #0b1a12; color: var(--gold); border: 1px solid var(--gold); font-size: 10px; height: 20px; }
 .seat.away { opacity: .55; }
 .seat.away .nm::after { content: '· away'; color: var(--muted); font-weight: 400; flex: none; }
@@ -266,3 +266,36 @@ input:focus { border-color: var(--gold); }
 .rebuy-row { gap: 8px; }
 .rebuy-row input { width: 130px; flex: none; text-transform: none; letter-spacing: 0; font-weight: 600; }
 .rebuy-row .btn { flex: 1; }
+
+/* ---------- all-in: win chances, several runs ---------- */
+.eq { display: flex; align-items: center; gap: 6px; margin-top: 3px; }
+.eq-num { font-size: 13px; font-weight: 800; color: #e7efe9; min-width: 44px; text-align: left; font-variant-numeric: tabular-nums; }
+.eq-bar { flex: 1; height: 6px; border-radius: 999px; background: rgba(255,255,255,.12); overflow: hidden; }
+.eq-bar i { display: block; height: 100%; background: #9fb3a6; border-radius: inherit; transition: width .6s ease; }
+.eq.lead .eq-num { color: var(--accent); } .eq.lead .eq-bar i { background: var(--accent); }
+.eq.dead .eq-num { color: #ff9da1; }
+.multi-run .board { --cw: clamp(30px, 5.2vw, 54px); gap: 4px; }
+.multi-run .center { gap: 5px; }
+.board.dealing::after { content: ''; position: absolute; inset: -4px; border-radius: 8px; border: 2px solid rgba(232,182,76,.7); pointer-events: none; }
+.small-select { width: auto; padding: 8px 10px; }
+.amount-picker { display: flex; flex-direction: column; gap: 8px; width: 100%; max-width: 640px; margin: 0 auto; }
+.amount-picker .rebuy-row { align-items: center; }
+.amount-picker .rebuy-row .pre-label { margin: 0; }
+.amount-picker .rebuy-row input { flex: 1; width: auto; }
+/* 5-second warning */
+.hurry { max-width: 640px; margin: 0 auto 8px; text-align: center; font-weight: 800; color: #fff; background: var(--danger); border-radius: 10px; padding: 7px 10px; animation: hurryPulse .5s ease-in-out infinite alternate; }
+@keyframes hurryPulse { to { background: #e2626a; transform: scale(1.02); } }
+.actions.hurrying { box-shadow: inset 0 3px 0 var(--danger); }
+@media (max-aspect-ratio: 1/1) {
+  .board { --cw: clamp(44px, 11vw, 60px); gap: 4px; }
+  .multi-run .board { --cw: clamp(34px, 8.6vw, 46px); }
+  .seat { --cw: clamp(32px, 7.6vw, 40px); }
+  .seat.me .hole { --cw: clamp(54px, 14vw, 66px); }
+  .eq-num { font-size: 12px; min-width: 38px; }
+}
+.runs-3 .board { --cw: clamp(26px, 4.3vw, 44px); gap: 3px; }
+.runs-3 .center { gap: 3px; }
+.multi-run .pot-chips { display: none; }
+.multi-run .status { font-size: 12px; max-width: 64%; }
+@media (max-aspect-ratio: 1/1) { .runs-3 .board { --cw: clamp(30px, 7.6vw, 40px); } }
+@media (max-aspect-ratio: 1/1) { .seat.me { width: 150px; } }

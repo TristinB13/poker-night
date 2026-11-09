@@ -50,7 +50,7 @@ ok(H('Th Td 9c 9s 2h 2d Ac').score > H('Th Td 9c 9s 2h 2d Kc').score, 'two pair 
 // ---- simulated games ----
 function playGame(seed, nPlayers, hands, rit = false) {
   const rnd = (() => { let s = seed; return () => (s = (s * 1103515245 + 12345) % 2147483648) / 2147483648; })();
-  const t = new Table({ code: 'TEST', hostToken: 'p0', settings: { startingStack: 500 + Math.floor(rnd() * 1000), smallBlind: 5, bigBlind: 10, runItTwice: rit }, delays: { street: 0, runout: 0, nextHand: 0 } });
+  const t = new Table({ code: 'TEST', hostToken: 'p0', settings: { startingStack: 500 + Math.floor(rnd() * 1000), smallBlind: 5, bigBlind: 10, maxRuns: rit || 1 }, delays: { street: 0, runout: 0, nextHand: 0 } });
   const tokens = [];
   for (let i = 0; i < nPlayers; i++) { tokens.push('p' + i); t.sit('p' + i, 'P' + i); }
   // Run the engine synchronously: replace timers with a queue.
@@ -60,7 +60,7 @@ function playGame(seed, nPlayers, hands, rit = false) {
     (t.hand && t.hand.street !== 'done' ? Object.values(t.hand.players).reduce((a, x) => a + x.total, 0) : 0);
   const start = nPlayers * t.settings.startingStack;
   t.running = true;
-  let played = 0, showdowns = 0, sidePots = 0, splits = 0, twice = 0;
+  let played = 0, showdowns = 0, sidePots = 0, splits = 0, twice = 0, thrice = 0;
   t.startHand();
   let guard = 0;
   while (played < hands && guard++ < hands * 400) {
@@ -69,7 +69,10 @@ function playGame(seed, nPlayers, hands, rit = false) {
     if (h.street === 'done') {
       played++;
       if (h.results.showdown) showdowns++;
-      if (h.board2) twice++;
+      if (h.boards.length) twice++;
+      if (h.boards.length === 2) thrice++;
+      if (h.results.showdown) for (const b of [h.board, ...h.boards]) assert.strictEqual(b.length, 5, 'every run has a full board');
+      if (h.ritBase) assert.strictEqual(new Set([...h.board, ...h.boards.flat().filter((c, k, a) => !h.ritBase.includes(c))]).size, h.board.length + h.boards.flat().length - h.boards.length * h.ritBase.length, 'runs never share fresh cards');
       if (h.results.pots.filter(p => !p.returned).length > 1) sidePots++;
       if (h.results.pots.some(p => p.winners.length > 1)) splits++;
       assert.strictEqual(total(), start + t.seats.filter(Boolean).reduce((a, p) => a + p.invested - t.settings.startingStack, 0), 'chips conserved');
@@ -83,8 +86,7 @@ function playGame(seed, nPlayers, hands, rit = false) {
     }
     if (h.rit && h.rit.pending) {
       queue.length = 0;
-      const yes = rnd() < 0.7;
-      for (const [seat, v] of Object.entries(h.rit.votes)) if (v === null && h.rit.pending) t.ritVote(t.seats[seat].token, yes || rnd() < 0.5);
+      for (const [seat, v] of Object.entries(h.rit.votes)) if (v === null && h.rit.pending) t.ritVote(t.seats[seat].token, rnd() < 0.15 ? 1 : 3);
       continue;
     }
     if (h.toAct === -1) { const fn = queue.shift(); assert.ok(fn, 'stalled with nobody to act'); fn(); continue; }
@@ -103,21 +105,20 @@ function playGame(seed, nPlayers, hands, rit = false) {
     while (t.hand === h && h.toAct === -1 && h.street !== 'done' && queue.length && !(h.rit && h.rit.pending)) queue.shift()();
   }
   clearTimeout(t.turnTimer);
-  if (rit) { /* boards must be 5 distinct cards each, sharing only the pre-all-in cards */ }
-  return { played, showdowns, sidePots, splits, twice };
+  return { played, showdowns, sidePots, splits, twice, thrice };
 }
 
 {
-  const agg = { played: 0, showdowns: 0, sidePots: 0, splits: 0, twice: 0 };
+  const agg = { played: 0, showdowns: 0, sidePots: 0, splits: 0, twice: 0, thrice: 0 };
   for (let g = 0; g < 80; g++) {
-    const r = playGame(g * 7919 + 1, 2 + (g % 8), 150, g % 2 === 1);
+    const r = playGame(g * 7919 + 1, 2 + (g % 8), 150, g % 4 === 1 ? 2 : g % 4 === 3 ? 3 : 1);
     for (const k in agg) agg[k] += r[k];
   }
   ok(agg.played > 5000, 'played many hands');
   ok(agg.sidePots > 50, 'exercised side pots');
   ok(agg.splits > 10, 'exercised split pots');
-  ok(agg.twice > 100, 'exercised run it twice');
-  console.log(`Simulated ${agg.played} hands (${agg.showdowns} showdowns, ${agg.sidePots} with side pots, ${agg.splits} split, ${agg.twice} run twice) — chips always conserved`);
+  ok(agg.twice > 100 && agg.thrice > 50, 'exercised running it 2 and 3 times');
+  console.log(`Simulated ${agg.played} hands (${agg.showdowns} showdowns, ${agg.sidePots} with side pots, ${agg.splits} split, ${agg.twice} run more than once, ${agg.thrice} of them 3 times) — chips always conserved`);
 }
 
 // ---- rules spot checks ----
@@ -290,8 +291,8 @@ function mk(settings = {}) {
     ok(h.rit && h.rit.pending, 'vote offered on all-in');
     t.ritVote('a', true); t.ritVote('b', true);
     const before = t.queue.length; t.flush();
-    ok(h.street === 'done' && h.board.length === 5 && h.board2.length === 5, 'two full boards');
-    const used = [...h.players[0].hole, ...h.players[1].hole, ...h.board, ...h.board2.slice(0)];
+    ok(h.street === 'done' && h.board.length === 5 && h.boards[0].length === 5, 'two full boards');
+    const used = [...h.players[0].hole, ...h.players[1].hole, ...h.board, ...h.boards[0]];
     ok(new Set(used).size === 14, 'second board uses fresh cards');
     ok(t.seats[0].chips + t.seats[1].chips === 2000, 'chips conserved run twice');
     ok(h.results.pots.filter(p => p.run).length >= 2, 'pot split across runs');
@@ -306,7 +307,52 @@ function mk(settings = {}) {
   t.act(t.seats[t.hand.toAct].token, { type: 'call' });
   const h1 = t.hand;
   t.ritVote('a', false); t.flush();
-  ok(h1.board2 === null && h1.street === 'done' && h1.board.length === 5, 'declined -> runs once');
+  ok(h1.boards.length === 0 && h1.street === 'done' && h1.board.length === 5, 'declined -> runs once');
+  t.destroy();
+}
+{
+  // run it 3 times: three boards, the pot split in thirds; fewest picked wins the vote
+  for (let i = 0; i < 150; i++) {
+    const t = mk({ maxRuns: 3, requireApproval: false });
+    t.sit('a', 'A', 0); t.sit('b', 'B', 1); t.sit('c', 'C', 2);
+    t.running = true; t.startHand(); t.running = false;
+    t.act(t.seats[t.hand.toAct].token, { type: 'allin' });
+    t.act(t.seats[t.hand.toAct].token, { type: 'call' });
+    t.act(t.seats[t.hand.toAct].token, { type: 'call' });
+    const h = t.hand;
+    ok(h.allInShow && Object.keys(h.equity).length === 3, 'hands shown with win chances at the all-in');
+    ok(Object.values(t.view('a').seats).filter(x => x && x.shown).length === 3, 'everyone sees all-in hands');
+    const sum = Object.values(h.equity).reduce((x, y) => x + y, 0);
+    ok(Math.abs(sum - 100) < 0.5, 'win chances add up to 100%');
+    t.ritVote('a', 3); t.ritVote('b', i % 2 ? 3 : 2); t.ritVote('c', 3);
+    t.flush();
+    const runs = i % 2 ? 3 : 2;
+    ok(h.runs === runs && h.boards.length === runs - 1 && [h.board, ...h.boards].every(b => b.length === 5), `ran ${runs} times`);
+    ok(t.seats[0].chips + t.seats[1].chips + t.seats[2].chips === 3000, 'chips conserved 3 runs');
+    ok(h.results.pots.filter(p => p.run).length >= runs, 'pot split across runs');
+    t.destroy();
+  }
+}
+{
+  // known odds: AA vs KK about 82%, and a flop where the set is a big favorite
+  const { equity, eval7 } = require('../src/equity');
+  const e = equity({ 0: [C('As'), C('Ah')], 1: [C('Ks'), C('Kh')] }, [], [], 40000);
+  ok(Math.abs(e[0] - 81.9) < 1.2, `AA vs KK ${e[0]}%`);
+  const f = equity({ 0: [C('Ad'), C('Kd')], 1: [C('2c'), C('2h')] }, [C('Kc'), C('7s'), C('2d')]);
+  ok(f[1] > 90 && f[0] + f[1] === 100, 'set over top pair on the flop');
+  let mism = 0;
+  for (let i = 0; i < 50000; i++) { const c = shuffledDeck().slice(0, 7); if (eval7(c) !== bestHand(c).score) mism++; }
+  ok(mism === 0, 'fast evaluator matches');
+}
+{
+  // new players choose a buy-in; the host sees it
+  const t = new Table({ code: 'J', hostToken: 'h', settings: { startingStack: 1000 } });
+  t.sit('h', 'Host', 0);
+  t.requestSeat('v', 'Vic', 3, 2500);
+  ok(t.view('h').requests[0].amount === 2500, 'host sees buy-in when approving');
+  t.approve(t.requests[0].id, true);
+  ok(t.seats[3].chips === 2500 && t.view('h').seats[3].net === 0, 'player starts with chosen buy-in');
+  assert.throws(() => t.requestSeat('w', 'Wes', 4, 5), /between/); passed++;
   t.destroy();
 }
 

@@ -2,6 +2,7 @@
 const crypto = require('crypto');
 const { shuffledDeck, cardName } = require('./cards');
 const { bestHand, currentHandName } = require('./evaluator');
+const { equity } = require('./equity');
 
 const MAX_SEATS = 9;
 const RIT_SECONDS = 15;
@@ -12,11 +13,14 @@ class Table {
     this.hostToken = hostToken;
     this.settings = {
       smallBlind: 5, bigBlind: 10, startingStack: 1000, turnSeconds: 30,
-      runItTwice: false, requireApproval: true, ...settings,
+      maxRuns: 1, requireApproval: true, ...settings,
     };
+    // older setting name: "run it twice" on/off
+    if (settings && settings.runItTwice !== undefined && settings.maxRuns === undefined) this.settings.maxRuns = settings.runItTwice ? 2 : 1;
+    delete this.settings.runItTwice;
     this.pendingBlinds = null;
     // Pauses so the game feels like a live dealer: before each new street, between streets on an all-in runout, and between hands.
-    this.delays = { street: 1300, runout: 2200, nextHand: 6000, preAction: 350, ...delays };
+    this.delays = { street: 1600, runout: 2800, laterRun: 2000, nextHand: 6500, preAction: 350, ...delays };
     this.onUpdate = onUpdate;
     this.seats = new Array(MAX_SEATS).fill(null);
     this.requests = [];          // seat requests waiting for host approval
@@ -76,7 +80,7 @@ class Table {
   isHost(token) { return token === this.hostToken; }
 
   // ---------- seating ----------
-  sit(token, name, seat = null) {
+  sit(token, name, seat = null, buyIn = null) {
     const existing = this.playerByToken(token);
     if (existing) { existing.name = name || existing.name; existing.connected = true; return existing; }
     if (seat === null || seat === undefined || this.seats[seat]) {
@@ -87,7 +91,7 @@ class Table {
     const p = {
       id: crypto.randomBytes(6).toString('hex'),
       token, name: String(name).slice(0, 18), seat,
-      chips: this.settings.startingStack, buyins: 1, invested: this.settings.startingStack,
+      chips: buyIn || this.settings.startingStack, buyins: 1, invested: buyIn || this.settings.startingStack,
       connected: true, leaving: false, away: false, preAction: null,
     };
     this.seats[seat] = p;
@@ -98,8 +102,17 @@ class Table {
   }
 
   // A visitor picks a seat. Goes straight in for the host, or when approval is off.
-  requestSeat(token, name, seat) {
+  // Buy-ins (and rebuys) can be any amount from one big blind up to 10x the starting stack.
+  checkBuyIn(amount) {
+    const { min, max } = this.rebuyLimits();
+    amount = amount === undefined || amount === null || amount === '' ? this.settings.startingStack : Math.floor(Number(amount));
+    if (!Number.isFinite(amount) || amount < min || amount > max) throw new Error(`Buy-in must be between ${min.toLocaleString()} and ${max.toLocaleString()}.`);
+    return amount;
+  }
+
+  requestSeat(token, name, seat, buyIn) {
     if (this.playerByToken(token)) throw new Error("You're already seated.");
+    buyIn = this.checkBuyIn(buyIn);
     seat = Math.floor(Number(seat));
     if (!(seat >= 0 && seat < MAX_SEATS)) throw new Error('Pick a seat.');
     if (this.seats[seat]) throw new Error('That seat is taken.');
@@ -107,14 +120,14 @@ class Table {
     if (!name) throw new Error('Enter your name.');
     this.denied.delete(token);
     if (!this.settings.requireApproval || this.isHost(token)) {
-      this.sit(token, name, seat);
+      this.sit(token, name, seat, buyIn);
       return { seated: true };
     }
-    const prev = this.requests.find(r => r.token === token);
-    if (prev) prev.seat = seat;
+    const prev = this.requests.find(r => r.token === token && r.type !== 'rebuy');
+    if (prev) { prev.seat = seat; prev.amount = buyIn; }
     else {
-      this.requests.push({ id: crypto.randomBytes(6).toString('hex'), token, name, seat, t: Date.now() });
-      this.say(`${name} asked to join.`);
+      this.requests.push({ id: crypto.randomBytes(6).toString('hex'), token, name, seat, amount: buyIn, t: Date.now() });
+      this.say(`${name} asked to join with ${buyIn}.`);
     }
     return { seated: false };
   }
@@ -134,7 +147,7 @@ class Table {
     if (!ok) { this.denied.add(r.token); this.say(`Host declined ${r.name}.`); return; }
     const seat = this.seats[r.seat] ? this.seats.findIndex(s => s === null) : r.seat;
     if (seat < 0) throw new Error('Table is full.');
-    this.sit(r.token, r.name, seat);
+    this.sit(r.token, r.name, seat, r.amount);
   }
 
   leave(token) {
@@ -166,9 +179,7 @@ class Table {
   rebuy(token, amount) {
     const p = this.playerByToken(token);
     if (!p) throw new Error('Not seated.');
-    const { min, max } = this.rebuyLimits();
-    amount = amount === undefined || amount === null || amount === '' ? this.settings.startingStack : Math.floor(Number(amount));
-    if (!Number.isFinite(amount) || amount < min || amount > max) throw new Error(`Rebuy must be between ${min.toLocaleString()} and ${max.toLocaleString()}.`);
+    amount = this.checkBuyIn(amount);
     if (p.chips > 0) throw new Error('You still have chips.');
     if (this.handActive() && this.hand.players[p.seat]) throw new Error('Wait for the hand to finish.');
     p.rebuyDenied = false;
@@ -244,16 +255,19 @@ class Table {
     if (this.pendingBlinds) Object.assign(this.settings, this.pendingBlinds);
     this.pendingBlinds = null;
   }
-  setOptions({ runItTwice, requireApproval, turnSeconds }) {
+  setOptions({ runItTwice, maxRuns, requireApproval, turnSeconds }) {
+    if (runItTwice !== undefined && maxRuns === undefined) maxRuns = runItTwice ? 2 : 1;
+    if (maxRuns !== undefined) {
+      const v = Math.floor(Number(maxRuns));
+      if (![1, 2, 3].includes(v)) throw new Error('Run it can be once, twice, or 3 times.');
+      this.settings.maxRuns = v;
+      this.say(v === 1 ? 'All-ins are run once.' : `All-ins can be run up to ${v === 2 ? 'twice' : '3 times'}.`);
+    }
     if (turnSeconds !== undefined) {
       const v = Math.floor(Number(turnSeconds));
       if (!(v >= 5 && v <= 300)) throw new Error('Turn time must be 5–300 seconds.');
       this.settings.turnSeconds = v;
       this.say(`Turn time is now ${v} seconds (starts with the next turn).`);
-    }
-    if (runItTwice !== undefined) {
-      this.settings.runItTwice = !!runItTwice;
-      this.say(`Run it twice is ${runItTwice ? 'on' : 'off'}.`);
     }
     if (requireApproval !== undefined) {
       this.settings.requireApproval = !!requireApproval;
@@ -297,11 +311,11 @@ class Table {
     const h = {
       number: ++this.handCount,
       deck: shuffledDeck(), pos: 0,
-      board: [], board2: null, street: 'preflop',
+      board: [], boards: [], street: 'preflop',
       players: {}, button: this.button, sbSeat, bbSeat,
       currentBet: 0, minRaise: this.bb,
       toAct: -1, deadline: 0, results: null,
-      rit: null, runs: null, ritBase: null,
+      rit: null, runs: null, ritBase: null, runIdx: 0, allInShow: false, equity: null,
     };
     for (const s of ready) {
       h.players[s] = { hole: [], bet: 0, total: 0, folded: false, allIn: false, acted: false, locked: false };
@@ -465,9 +479,8 @@ class Table {
     h.toAct = -1;
     this.changed();
     if (actors.length < 2 && h.street !== 'river') {
-      // Everyone left is all-in. Offer to run it twice (if the host turned it on), then run the board out.
-      if (this.settings.runItTwice && h.runs === null) return this.startRitVote(live);
-      this.schedule(() => this.nextStreet(), this.delays.runout);
+      // Everyone left is all-in: show the hands, then run the board out.
+      return this.startAllIn(live);
     } else {
       this.schedule(() => this.nextStreet(), this.delays.street);
     }
@@ -482,49 +495,104 @@ class Table {
     this.act(p.token, { type: opt.canCheck && !p.leaving ? 'check' : 'fold' });
   }
 
-  // ---------- run it twice ----------
+  // ---------- all-ins: show hands, win chances, run it 1-3 times ----------
+  startAllIn(live) {
+    const h = this.hand;
+    if (h.allInShow) return;
+    // pull the bets into the pot
+    for (const hp of Object.values(h.players)) { hp.bet = 0; hp.acted = false; hp.locked = false; }
+    for (const p of this.seats) if (p) p.preAction = null;
+    h.currentBet = 0;
+    h.toAct = -1;
+    h.allInShow = true;
+    this.say(`All in! ${live.map(s => `${this.seats[s].name} shows ${h.players[s].hole.map(cardName).join(' ')}`).join(' · ')}`);
+    this.updateEquity();
+    if (this.settings.maxRuns > 1) return this.startRitVote(live);
+    this.beginRunout(1);
+  }
+
+  // Win chances on the board being dealt right now.
+  updateEquity() {
+    const h = this.hand;
+    const live = Object.keys(h.players).map(Number).filter(s => !h.players[s].folded);
+    const board = h.runIdx === 0 ? h.board : h.boards[h.runIdx - 1];
+    const holes = Object.fromEntries(live.map(s => [s, h.players[s].hole]));
+    const dead = [...h.board, ...h.boards.flat()].filter(c => !board.includes(c));
+    h.equity = equity(holes, board, dead);
+  }
+
   startRitVote(live) {
     const h = this.hand;
-    h.rit = { pending: true, votes: {}, deadline: Date.now() + RIT_SECONDS * 1000 };
+    const max = this.settings.maxRuns;
+    h.rit = { pending: true, votes: {}, max, deadline: Date.now() + RIT_SECONDS * 1000 };
     for (const s of live) {
       const p = this.seats[s];
-      h.rit.votes[s] = p.away || p.leaving ? false : null;
+      h.rit.votes[s] = p.away || p.leaving ? 1 : null;
     }
-    this.say('All-in! Deciding whether to run it twice…');
-    if (Object.values(h.rit.votes).includes(false)) return this.resolveRit(1);
+    if (Object.values(h.rit.votes).includes(1)) return this.resolveRit(1);
     const handNo = h.number;
     this.schedule(() => { if (this.hand === h && h.rit.pending && h.number === handNo) this.resolveRit(1); }, RIT_SECONDS * 1000);
     this.changed();
   }
-  ritVote(token, yes) {
+  // Each player picks once, twice or 3 times. The table runs it the fewest times anyone picked.
+  ritVote(token, choice) {
     const h = this.hand;
     const p = this.playerByToken(token);
     if (!h || !h.rit || !h.rit.pending || !p || !(p.seat in h.rit.votes)) throw new Error('No vote right now.');
     if (h.rit.votes[p.seat] !== null) return;
-    h.rit.votes[p.seat] = !!yes;
-    if (!yes) return this.resolveRit(1);
-    if (Object.values(h.rit.votes).every(v => v === true)) return this.resolveRit(2);
+    let n = choice === true ? 2 : choice === false ? 1 : Math.floor(Number(choice));
+    if (!(n >= 1)) n = 1;
+    n = Math.min(n, h.rit.max);
+    h.rit.votes[p.seat] = n;
+    if (n === 1) return this.resolveRit(1);
+    const votes = Object.values(h.rit.votes);
+    if (votes.every(v => v !== null)) return this.resolveRit(Math.min(...votes));
     this.changed();
   }
   resolveRit(runs) {
     const h = this.hand;
     h.rit.pending = false;
     h.rit.runs = runs;
+    this.say(runs === 1 ? 'Running it once.' : `Everyone agreed — running it ${runs === 2 ? 'twice' : '3 times'}.`);
+    this.beginRunout(runs);
+  }
+
+  beginRunout(runs) {
+    const h = this.hand;
     h.runs = runs;
     h.ritBase = h.board.slice();
-    this.say(runs === 2 ? 'Everyone agreed — running it twice.' : 'Running it once.');
+    h.boards = [];
+    h.runIdx = 0;
     this.changed();
-    this.schedule(() => this.nextStreet(), this.delays.runout);
+    this.schedule(() => this.runoutStep(), this.delays.runout);
   }
-  // Deal the second board from the same deck, picking up where the first left off (burns included).
-  dealSecondRun() {
+  // Deal the next street of the current run. Every run comes off the same deck (with burns), one after another.
+  runoutStep() {
     const h = this.hand;
-    const b = h.ritBase.slice();
-    if (b.length === 0) { this.draw(); b.push(this.draw(), this.draw(), this.draw()); }
-    if (b.length === 3) { this.draw(); b.push(this.draw()); }
-    if (b.length === 4) { this.draw(); b.push(this.draw()); }
-    h.board2 = b;
-    this.say(`Second run: ${b.map(cardName).join(' ')}`);
+    if (!h || h.street === 'done') return;
+    const board = h.runIdx === 0 ? h.board : h.boards[h.runIdx - 1];
+    this.draw(); // burn
+    if (board.length === 0) board.push(this.draw(), this.draw(), this.draw());
+    else board.push(this.draw());
+    const label = board.length === 3 ? 'Flop' : board.length === 4 ? 'Turn' : 'River';
+    if (h.runIdx === 0) h.street = label.toLowerCase();
+    this.say(`${h.runs > 1 ? `Run ${h.runIdx + 1} — ` : ''}${label}: ${board.map(cardName).join(' ')}`);
+    this.updateEquity();
+    this.changed();
+    const pace = h.runIdx === 0 ? this.delays.runout : this.delays.laterRun;
+    if (board.length < 5) return this.schedule(() => this.runoutStep(), pace);
+    if (h.runIdx + 1 < h.runs) {
+      return this.schedule(() => {
+        if (this.hand !== h) return;
+        h.runIdx++;
+        h.boards.push(h.ritBase.slice());
+        this.updateEquity();
+        this.changed();
+        this.schedule(() => this.runoutStep(), this.delays.laterRun);
+      }, pace);
+    }
+    const live = Object.keys(h.players).map(Number).filter(s => !h.players[s].folded);
+    this.schedule(() => this.finish(live, true), pace);
   }
 
   nextStreet() {
@@ -537,11 +605,6 @@ class Table {
 
     if (h.street === 'river') {
       const live = Object.keys(h.players).map(Number).filter(s => !h.players[s].folded);
-      if (h.runs === 2 && !h.board2) {
-        this.dealSecondRun();
-        this.changed();
-        return this.schedule(() => this.finish(live, true), this.delays.runout);
-      }
       return this.finish(live, true);
     }
 
@@ -550,20 +613,21 @@ class Table {
     else if (h.street === 'flop') { h.board.push(this.draw()); h.street = 'turn'; }
     else { h.board.push(this.draw()); h.street = 'river'; }
     const label = h.street[0].toUpperCase() + h.street.slice(1);
-    this.say(`${h.runs === 2 ? 'First run — ' : ''}${label}: ${h.board.map(cardName).join(' ')}`);
+    this.say(`${label}: ${h.board.map(cardName).join(' ')}`);
 
     h.toAct = h.button; // action starts with the first live player left of the button
     this.proceed();
   }
 
   // Award the pot(s). Builds side pots from each player's total contribution.
-  // When run twice, each pot is split in half and each half goes to the best hand on its own board.
+  // When run more than once, each pot is split evenly between the runs and each part goes to the best hand on that board.
   finish(live, showdown) {
     const h = this.hand;
     clearTimeout(this.turnTimer);
     h.toAct = -1;
     const all = Object.entries(h.players).map(([s, hp]) => ({ seat: Number(s), hp }));
-    const results = { showdown, pots: [], shown: {}, hands: {}, hands2: {}, winCards: [[], []] };
+    const boards = [h.board, ...h.boards];
+    const results = { showdown, pots: [], shown: {}, handsByRun: boards.map(() => ({})), winCards: boards.map(() => []) };
 
     if (!showdown) {
       const total = all.reduce((a, x) => a + x.hp.total, 0);
@@ -572,14 +636,13 @@ class Table {
       this.say(`${this.seats[live[0]].name} wins ${total}.`);
     } else {
       h.street = 'showdown';
-      const boards = h.board2 ? [h.board, h.board2] : [h.board];
       const evals = boards.map(() => ({}));
       for (const s of live) {
         results.shown[s] = h.players[s].hole.map(cardName);
         boards.forEach((board, r) => {
           const e = bestHand([...h.players[s].hole, ...board]);
           evals[r][s] = e;
-          (r === 0 ? results.hands : results.hands2)[s] = { name: e.name, cards: e.cards.map(cardName) };
+          results.handsByRun[r][s] = { name: e.name, cards: e.cards.map(cardName) };
         });
       }
       const levels = [...new Set(live.map(s => h.players[s].total))].sort((a, b) => a - b);
@@ -600,7 +663,8 @@ class Table {
           return;
         }
         const label = contested > 1 ? (i === 0 ? 'the main pot' : `side pot ${i}`) : 'the pot';
-        const parts = boards.length === 2 ? [Math.ceil(amount / 2), Math.floor(amount / 2)] : [amount];
+        const n = boards.length, base = Math.floor(amount / n);
+        const parts = boards.map((_, r) => base + (r < amount - base * n ? 1 : 0));
         parts.forEach((part, r) => {
           if (part === 0) return;
           const best = Math.max(...eligible.map(s => evals[r][s].score));
@@ -615,10 +679,10 @@ class Table {
             this.seats[s].chips += share + (odd > 0 ? 1 : 0); odd--;
           }
           for (const w of winners) for (const c of evals[r][w].cards) results.winCards[r].push(cardName(c));
-          const pot = { amount: part, winners, hand: evals[r][winners[0]].name, side: i > 0, run: boards.length === 2 ? r + 1 : null };
+          const pot = { amount: part, winners, hand: evals[r][winners[0]].name, side: i > 0, run: n > 1 ? r + 1 : null };
           results.pots.push(pot);
           const runLabel = pot.run ? ` on run ${pot.run}` : '';
-          const what = boards.length === 2 ? `half of ${label}` : label;
+          const what = n === 2 ? `half of ${label}` : n === 3 ? `a third of ${label}` : label;
           this.say(`${winners.map(w => this.seats[w].name).join(' & ')} ${winners.length > 1 ? 'split' : 'wins'} ${what} (${part})${runLabel} with ${pot.hand}.`);
         });
       });
@@ -639,16 +703,17 @@ class Table {
       if (!p) return null;
       const hp = h && h.players[s];
       const shown = h && h.results && h.results.shown[s];
-      const hn = h && h.results && h.results.hands[s];
-      const hn2 = h && h.results && h.results.hands2[s];
+      const names = h && h.results && h.results.handsByRun.map(run => run[s]).filter(Boolean).map(x => x.name);
+      const allInCards = h && h.allInShow && hp && !hp.folded && !done ? hp.hole.map(cardName) : null;
       return {
         seat: s, id: p.id, name: p.name, chips: p.chips, connected: p.connected, away: p.away,
         net: p.chips + (hp && !done ? hp.total : 0) - p.invested,
         inHand: !!hp, folded: hp ? hp.folded : false, allIn: hp ? hp.allIn : false,
         bet: hp ? hp.bet : 0,
         hasCards: (!!hp && !hp.folded && !done) || !!shown,
-        shown: shown || null,
-        handName: hn ? (hn2 ? `${hn.name} · ${hn2.name}` : hn.name) : null,
+        shown: shown || allInCards || null,
+        equity: h && h.allInShow && !done && h.equity && hp && !hp.folded ? h.equity[s] : null,
+        handName: names && names.length ? names.join(' · ') : null,
         isButton: h ? h.button === s : false,
         isSB: h ? h.sbSeat === s : false,
         isBB: h ? h.bbSeat === s : false,
@@ -661,9 +726,9 @@ class Table {
       hand = {
         number: h.number, street: h.street,
         board: h.board.map(cardName),
-        board2: h.board2 ? h.board2.map(cardName) : null,
-        runs: h.runs,
-        rit: h.rit ? { pending: h.rit.pending, votes: h.rit.votes, deadline: h.rit.deadline, runs: h.rit.runs || null } : null,
+        boards: [h.board, ...h.boards].map(b => b.map(cardName)),
+        runs: h.runs, runIdx: h.runIdx, allIn: h.allInShow,
+        rit: h.rit ? { pending: h.rit.pending, votes: h.rit.votes, max: h.rit.max, deadline: h.rit.deadline, runs: h.rit.runs || null } : null,
         pot, currentBet: h.currentBet, toAct: h.toAct, deadline: h.deadline,
         results: h.results ? {
           showdown: h.results.showdown,
@@ -703,6 +768,8 @@ class Table {
         pending: request ? request.seat : null,
         denied: this.denied.has(token),
         isHost: this.isHost(token),
+        buyIn: request ? request.amount : null,
+        limits: this.rebuyLimits(),
       },
       now: Date.now(),
     };

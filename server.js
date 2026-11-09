@@ -59,7 +59,7 @@ io.on('connection', (socket) => {
       bigBlind: bb,
       smallBlind: num(data.smallBlind, 1, bb, Math.floor(bb / 2)),
       turnSeconds: num(data.turnSeconds, 10, 300, 30),
-      runItTwice: !!data.runItTwice,
+      maxRuns: [1, 2, 3].includes(Number(data.maxRuns)) ? Number(data.maxRuns) : (data.runItTwice ? 2 : 1),
       requireApproval: data.requireApproval !== false,
     };
     const table = new Table({ code, hostToken: token, settings, onUpdate: broadcast });
@@ -90,7 +90,7 @@ io.on('connection', (socket) => {
 
   socket.on('sit', (data, cb) => reply(cb, () => {
     const t = current();
-    const r = t.requestSeat(socket.data.token, socket.data.name, data.seat);
+    const r = t.requestSeat(socket.data.token, socket.data.name, data.seat, data.buyIn);
     broadcast(t);
     return r;
   }));
@@ -103,7 +103,7 @@ io.on('connection', (socket) => {
   socket.on('away', (data, cb) => reply(cb, () => { const t = current(); t.setAway(socket.data.token, data.on); broadcast(t); }));
   socket.on('chat', (data, cb) => reply(cb, () => { const t = current(); t.addChat(socket.data.token, data && data.text); broadcast(t); }));
   socket.on('show', (_d, cb) => reply(cb, () => { const t = current(); t.showCards(socket.data.token); broadcast(t); }));
-  socket.on('rit', (data, cb) => reply(cb, () => { const t = current(); t.ritVote(socket.data.token, data.yes); broadcast(t); }));
+  socket.on('rit', (data, cb) => reply(cb, () => { const t = current(); t.ritVote(socket.data.token, data.runs !== undefined ? data.runs : data.yes); broadcast(t); }));
   socket.on('rebuy', (data, cb) => reply(cb, () => { const t = current(); const r = t.rebuy(socket.data.token, data && data.amount); broadcast(t); return r; }));
 
   socket.on('leave', (_d, cb) => reply(cb, () => {
@@ -122,7 +122,7 @@ io.on('connection', (socket) => {
     else if (data.type === 'blinds') t.setBlinds(data.smallBlind, data.bigBlind);
     else if (data.type === 'approve') t.approve(data.id, !!data.ok);
     else if (data.type === 'shuffle') t.shuffleSeats();
-    else if (data.type === 'options') t.setOptions({ runItTwice: data.runItTwice, requireApproval: data.requireApproval, turnSeconds: data.turnSeconds });
+    else if (data.type === 'options') t.setOptions({ runItTwice: data.runItTwice, maxRuns: data.maxRuns, requireApproval: data.requireApproval, turnSeconds: data.turnSeconds });
     broadcast(t);
   }));
 

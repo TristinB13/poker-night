@@ -41,9 +41,9 @@ Notes on the free plan:
 
 ## How to play
 
-1. The host enters a name and chooses starting chips, blinds, and seconds per turn. Two options are also on this screen: **approve each player who joins** (on by default) and **offer "run it twice" on all-ins**. Then click **Create table**.
+1. The host enters a name and chooses starting chips, blinds, and seconds per turn. Two options are also on this screen: **approve each player who joins** (on by default) and how many times **all-ins can be run** (once, up to twice, or up to 3 times). Then click **Create table**.
 2. Tap the table code at the top to copy the invite link, and send it to your friends.
-3. Friends open the link, enter their name, and tap an open seat. If approval is on, the host sees "Jake wants to join" and taps **Let in** or **Decline**.
+3. Friends open the link, enter their name, choose their buy-in (quick buttons for ½×, 1×, 2× or 3× the starting chips, or type any amount), and tap an open seat. If approval is on, the host sees "Jake wants to join (seat 4) with 2,000" and taps **Let in** or **Decline**.
 4. Before the first hand, the host can **Shuffle seats** to randomize where everyone sits. Then press **Start game**.
 5. On your turn, choose Fold, Check/Call, or Raise. Use the slider or the Min, ½ Pot, ¾ Pot, Pot, and All-in buttons to size your bet.
 
@@ -52,7 +52,10 @@ During the game:
 - **Your hand** (Pair of Kings, Flush, and so on) shows under your name, updated as the board comes out. Only you can see it.
 - **Small blind, big blind, and dealer** are marked on the table, and the hand log records each blind posted.
 - **Chips on the table:** each player's chips are shown as stacks next to their name, bets as chips in front of them, and the pot as stacks in the middle. Chips slide into the bet spot when someone bets, into the pot at the end of each betting round, and to the winner at the end of the hand.
-- **Run it twice:** when everyone left is all-in and the host turned this on, each player in the hand is asked. If everyone agrees, the rest of the board is dealt twice from the same deck, and each board wins half the pot. If anyone says no, or doesn't answer within 15 seconds, it's dealt once.
+- **All-ins:** when everyone left in the hand is all-in, every player's cards are turned face up and each player's **chance to win** appears on their nameplate as a percentage with a bar. It updates as each card comes out. The board is dealt a little slower so you can watch it.
+- **Run it once, twice, or 3 times:** if the host allows it, each player in an all-in picks Once, Twice or 3 times, and the table runs it the fewest times anyone picked. Each run is dealt from the same deck one after another, and the pot is split evenly between the runs. If someone doesn't answer within 15 seconds, it's run once.
+- **Your turn:** a distinct bell plays and phones vibrate (Android; iPhones don't allow websites to vibrate). If the tab is in the background, its title flashes "Your turn!".
+- **5-second warning:** with 5 seconds left on your clock, a red banner counts down, a warning beep plays, and your phone buzzes.
 - **Show your cards:** after a hand ends, anyone whose cards weren't shown can tap **Show my cards**.
 - **Away:** ☰ menu → **Go away** to sit out. You aren't dealt in until you tap **I'm back**. If you go away during a hand, you check when you can and otherwise fold.
 - **☰ menu** also shows standings (each player's net win or loss), the invite link, and Leave table. The host gets Pause, Shuffle seats, Set blinds (new blinds start next hand), seconds per turn (starts with the next turn), and both options from the create screen.

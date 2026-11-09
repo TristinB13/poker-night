@@ -41,7 +41,13 @@
     </div>
     <label class="inline">Seconds per turn<input id="turn" type="number" value="30" min="10" max="300"></label>
     <label class="check"><input id="approval" type="checkbox" checked> I approve each player who joins</label>
-    <label class="check"><input id="rit" type="checkbox"> Offer "run it twice" on all-ins</label>
+    <label class="inline">All-ins can be run
+      <select id="maxRuns" class="select small-select">
+        <option value="1">Once</option>
+        <option value="2">Up to twice</option>
+        <option value="3">Up to 3 times</option>
+      </select>
+    </label>
     <button id="createBtn" class="btn gold wide">Create table</button>
   </section>
   <p id="lobbyErr" class="err" role="alert"></p>
@@ -69,6 +75,7 @@
         <div id="pot" class="pot"></div>
         <div id="board" class="board"></div>
         <div id="board2" class="board hidden"></div>
+        <div id="board3" class="board hidden"></div>
         <div id="status" class="status"></div>
       </div>
       <div id="seats"></div>

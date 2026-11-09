@@ -55,7 +55,7 @@ $('joinBtn').onclick = () => enter('join', { code: $('code').value });
 $('code').onkeydown = e => { if (e.key === 'Enter') $('joinBtn').click(); };
 $('createBtn').onclick = () => enter('create', {
   startingStack: $('stack').value, smallBlind: $('sb').value, bigBlind: $('bb').value, turnSeconds: $('turn').value,
-  requireApproval: $('approval').checked, runItTwice: $('rit').checked,
+  requireApproval: $('approval').checked, maxRuns: $('maxRuns').value,
 });
 
 function showGame(on) {
@@ -142,7 +142,7 @@ function seatPos(seat) {
 // Cards animate in only the first time they appear, one after another like a dealer.
 const seenCards = new Set();
 let dealStagger = 0;
-function dealIn(node, key, step = 0.22) {
+function dealIn(node, key, step = 0.3) {
   if (seenCards.has(key)) return node;
   seenCards.add(key);
   node.classList.add('new');
@@ -228,10 +228,22 @@ function render() {
   $('blindsInfo').textContent = `Blinds ${s.settings.smallBlind}/${s.settings.bigBlind}${pb}` + (h ? ` · Hand #${h.number}` : '');
 
   // board(s) + pot
-  const wc = h && h.results ? h.results.winCards : [[], []];
-  renderBoard('board', h && h.board, wc[0]);
-  $('board2').classList.toggle('hidden', !(h && h.board2));
-  if (h && h.board2) renderBoard('board2', h.board2, wc[1]);
+  const wc = h && h.results ? h.results.winCards : [];
+  const boards = h ? (h.boards || [h.board]) : [[]];
+  const multi = boards.length > 1;
+  $('felt').classList.toggle('multi-run', multi);
+  $('felt').classList.toggle('runs-3', boards.length === 3);
+  ['board', 'board2', 'board3'].forEach((id, r) => {
+    const show = r < boards.length;
+    $(id).classList.toggle('hidden', !show);
+    if (show) {
+      renderBoard(id, boards[r], wc[r]);
+      if (multi) {
+        $(id).prepend(el('span', 'run-label', `Run ${r + 1}`));
+        $(id).classList.toggle('dealing', !!(h.allIn && !h.results && h.runIdx === r));
+      } else $(id).classList.remove('dealing');
+    }
+  });
   $('pot').textContent = h && h.pot ? `Pot ${fmt(h.pot)}` : '';
   $('potChips').innerHTML = '';
   if (h && h.pot) $('potChips').appendChild(chipStack(h.pot, portrait() ? 6 : 9));
@@ -240,13 +252,13 @@ function render() {
   // seats
   const wrap = $('seats'); wrap.innerHTML = '';
   const winners = new Set(h && h.results ? h.results.winners : []);
-  const winAll = new Set([...(wc[0] || []), ...(wc[1] || [])]);
+  const winAll = new Set(wc.flat());
   s.seats.forEach((p, i) => {
     const pos = seatPos(i);
     if (!p) {
       if (you) return;
       const v = s.visitor || {};
-      const b = button(v.pending === i ? 'Requested' : 'Sit here', 'open-seat' + (v.pending === i ? ' mine' : ''), () => emit('sit', { seat: i }));
+      const b = button(v.pending === i ? 'Requested' : 'Sit here', 'open-seat' + (v.pending === i ? ' mine' : ''), () => emit('sit', { seat: i, buyIn: visitorBuyIn() }));
       b.style.left = pos.x + '%'; b.style.top = pos.y + '%';
       wrap.appendChild(b);
       return;
@@ -259,11 +271,11 @@ function render() {
     const hole = el('div', 'hole');
     const done = h && h.street === 'done';
     if (isMe && you.hole.length && !(done && p.folded && !p.shown)) {
-      you.hole.forEach((c, k) => hole.appendChild(dealIn(cardEl(c, winAll.size ? (winAll.has(c) ? 'win' : 'dim') : (you.folded ? 'dim' : '')), `${h ? h.number : 0}:hole:${i}:${k}`, 0.12)));
+      you.hole.forEach((c, k) => hole.appendChild(dealIn(cardEl(c, winAll.size ? (winAll.has(c) ? 'win' : 'dim') : (you.folded ? 'dim' : '')), `${h ? h.number : 0}:hole:${i}:${k}`, 0.16)));
     } else if (p.shown) {
       p.shown.forEach(c => hole.appendChild(cardEl(c, winAll.has(c) ? 'win' : winAll.size ? 'dim' : '')));
     } else if (p.hasCards) {
-      [0, 1].forEach(k => hole.appendChild(dealIn(cardEl(null), `${h ? h.number : 0}:hole:${i}:${k}`, 0.12)));
+      [0, 1].forEach(k => hole.appendChild(dealIn(cardEl(null), `${h ? h.number : 0}:hole:${i}:${k}`, 0.16)));
     }
     seat.appendChild(hole);
 
@@ -277,6 +289,15 @@ function render() {
     const ch = el('div', 'ch', fmt(p.chips));
     if (p.allIn && h && !done) ch.appendChild(el('span', 'allin-badge', 'ALL-IN'));
     plate.appendChild(ch);
+    if (p.equity !== null && p.equity !== undefined) {
+      // live chance to win during an all-in, with a bar that grows and shrinks as cards come
+      const lead = Math.max(...s.seats.filter(q => q && q.equity !== null && q.equity !== undefined).map(q => q.equity));
+      const eq = el('div', 'eq' + (p.equity === lead && p.equity > 0 ? ' lead' : '') + (p.equity === 0 ? ' dead' : ''));
+      eq.append(el('span', 'eq-num', `${p.equity % 1 ? p.equity.toFixed(1) : p.equity}%`));
+      const bar = el('div', 'eq-bar'); const fill = el('i'); fill.style.width = p.equity + '%'; bar.appendChild(fill);
+      eq.appendChild(bar);
+      plate.appendChild(eq);
+    }
     if (p.handName) plate.appendChild(el('div', 'hn', p.handName));
     else if (isMe && you.strength) plate.appendChild(el('div', 'str', you.strength));
     if (h && h.toAct === i) { const t = el('div', 'timer'); t.dataset.timer = '1'; plate.appendChild(t); }
@@ -311,9 +332,10 @@ function render() {
 function statusText() {
   const s = state, h = s.hand;
   if (h && h.rit && h.rit.pending) {
-    const yes = Object.entries(h.rit.votes).filter(([, v]) => v).map(([seat]) => s.seats[seat] && s.seats[seat].name);
-    return 'All-in! Run it twice?' + (yes.length ? ` (${yes.join(', ')} said yes)` : '');
+    const voted = Object.entries(h.rit.votes).filter(([, v]) => v).map(([seat]) => s.seats[seat] && s.seats[seat].name);
+    return 'All-in! How many times should we run it?' + (voted.length ? ` (${voted.join(', ')} picked)` : '');
   }
+  if (h && h.allIn && !h.results && h.runs > 1) return `Running it ${h.runs === 2 ? 'twice' : '3 times'} — run ${h.runIdx + 1}`;
   if (!s.running && (!h || h.street === 'done')) {
     const n = s.seats.filter(Boolean).length;
     if (!s.you) return '';
@@ -324,7 +346,9 @@ function statusText() {
   if (h.street === 'done' && h.results) {
     return h.results.pots.filter(p => !p.returned).map(p => {
       const names = p.winners.map(w => s.seats[w] ? s.seats[w].name : 'Player').join(' & ');
-      return `${p.run ? `Run ${p.run}: ` : ''}${names} ${p.winners.length > 1 ? 'split' : 'wins'} ${fmt(p.amount)}${p.hand ? ' — ' + p.hand : ''}`;
+      // with several runs, keep it short: who took each run
+      if (p.run) return `Run ${p.run}: ${names}${p.winners.length > 1 ? ' split' : ''} +${fmt(p.amount)}`;
+      return `${names} ${p.winners.length > 1 ? 'split' : 'wins'} ${fmt(p.amount)}${p.hand ? ' — ' + p.hand : ''}`;
     }).join(' · ');
   }
   if (h.toAct >= 0 && s.seats[h.toAct]) return s.you && s.you.seat === h.toAct ? 'Your turn' : `${s.seats[h.toAct].name} to act`;
@@ -352,8 +376,10 @@ function renderActions() {
     if (v.pending !== null && v.pending !== undefined) {
       box.appendChild(el('div', 'q', 'Waiting for the host to let you in…'));
       box.appendChild(button('Cancel request', 'btn', () => emit('cancelRequest')));
+      if (v.buyIn) box.appendChild(el('div', 'pre-label', `Buy-in: ${fmt(v.buyIn)}`));
     } else {
-      box.appendChild(el('div', 'q', v.denied ? 'The host declined your request. You can pick a seat and ask again.' : 'Tap an open seat to sit down.'));
+      box.appendChild(el('div', 'q', v.denied ? 'The host declined your request. You can pick a seat and ask again.' : 'Choose your buy-in, then tap an open seat.'));
+      box.appendChild(amountPicker(v.limits, s.settings.startingStack, buyInDraft, val => { buyInDraft = val; }));
     }
     bar.appendChild(box);
     return;
@@ -361,12 +387,14 @@ function renderActions() {
 
   if (ritMine) {
     const box = el('div', 'prompt');
-    const q = el('div', 'q', 'All-in — run it twice?');
+    const q = el('div', 'q', 'All-in — how many times?');
     q.dataset.rit = '1';
     box.appendChild(q);
-    box.appendChild(el('div', 'pre-label', 'Each player has to agree. Each board wins half the pot.'));
+    box.appendChild(el('div', 'pre-label', "It's run the fewest times anyone picks. The pot is split evenly between the runs."));
     const row = el('div', 'row');
-    row.append(button('Run it twice', 'btn gold', () => emit('rit', { yes: true })), button('Once', 'btn', () => emit('rit', { yes: false })));
+    row.appendChild(button('Once', 'btn', () => emit('rit', { runs: 1 })));
+    row.appendChild(button('Twice', 'btn gold', () => emit('rit', { runs: 2 })));
+    if (h.rit.max >= 3) row.appendChild(button('3 times', 'btn gold', () => emit('rit', { runs: 3 })));
     box.appendChild(row);
     bar.appendChild(box);
     return;
@@ -397,20 +425,14 @@ function renderActions() {
       } else {
         if (you.rebuyDenied) box.appendChild(el('div', 'pre-label', 'The host declined your rebuy.'));
         // Pick how much to rebuy for: quick buttons plus any amount you type.
-        const lim = you.rebuyLimits, start = s.settings.startingStack;
-        const amt = Object.assign(el('input'), { type: 'number', min: lim.min, max: lim.max, step: 1, value: start, inputMode: 'numeric' });
+        const lim = you.rebuyLimits;
+        let rebuyAmt = s.settings.startingStack;
         const go = button('', 'btn gold');
-        const label = () => { go.textContent = (you.isHost ? 'Rebuy for ' : 'Ask to rebuy for ') + fmt(Math.floor(Number(amt.value) || 0)); };
-        amt.oninput = label; label();
-        go.onclick = () => emit('rebuy', { amount: amt.value });
-        const quick = el('div', 'presets');
-        for (const [txt, v] of [['½×', start / 2], ['1×', start], ['2×', start * 2], ['3×', start * 3]]) {
-          const val = Math.max(lim.min, Math.min(lim.max, Math.round(v)));
-          quick.appendChild(button(`${txt} ${fmt(val)}`, 'btn', () => { amt.value = val; label(); }));
-        }
-        const row = el('div', 'row rebuy-row');
-        row.append(amt, go);
-        box.append(el('div', 'pre-label', `Rebuy for any amount from ${fmt(lim.min)} to ${fmt(lim.max)}`), quick, row);
+        const label = () => { go.textContent = (you.isHost ? 'Rebuy for ' : 'Ask to rebuy for ') + fmt(rebuyAmt); };
+        label();
+        go.onclick = () => emit('rebuy', { amount: rebuyAmt });
+        box.append(el('div', 'pre-label', `Rebuy for any amount from ${fmt(lim.min)} to ${fmt(lim.max)}`),
+          amountPicker(lim, s.settings.startingStack, rebuyAmt, v => { rebuyAmt = v; label(); }), go);
       }
     }
     else if (active && !me.inHand) box.appendChild(el('div', 'pre-label', "You'll be dealt in next hand."));
@@ -466,7 +488,7 @@ function renderHost() {
       const row = el('div', 'req' + (r.type === 'rebuy' ? ' rebuy' : ''));
       row.appendChild(el('span', '', r.type === 'rebuy'
         ? `${r.name} wants to rebuy for ${fmt(r.amount || s.settings.startingStack)}`
-        : `${r.name} wants to join (seat ${r.seat + 1})`));
+        : `${r.name} wants to join (seat ${r.seat + 1}) with ${fmt(r.amount || s.settings.startingStack)}`));
       row.append(button(r.type === 'rebuy' ? 'Approve' : 'Let in', 'btn primary', () => emit('host', { type: 'approve', id: r.id, ok: true })),
         button('Decline', 'btn', () => emit('host', { type: 'approve', id: r.id, ok: false })));
       list.appendChild(row);
@@ -496,7 +518,12 @@ function renderHost() {
   const bb = Object.assign(el('input'), { type: 'number', value: s.settings.bigBlind, placeholder: 'BB' });
   row.append(sb, bb, button('Set blinds', 'btn', () => emit('host', { type: 'blinds', smallBlind: sb.value, bigBlind: bb.value })));
   hb.appendChild(row);
-  for (const [key, label] of [['requireApproval', 'Approve new players'], ['runItTwice', 'Offer run it twice on all-ins']]) {
+  const runSel = el('select', 'select');
+  for (const [v, label] of [[1, 'Once'], [2, 'Up to twice'], [3, 'Up to 3 times']]) runSel.appendChild(Object.assign(el('option', '', label), { value: v, selected: s.settings.maxRuns === v }));
+  runSel.onchange = () => emit('host', { type: 'options', maxRuns: Number(runSel.value) });
+  const rl = el('label', 'field-row', 'All-ins can be run'); rl.appendChild(runSel);
+  hb.appendChild(rl);
+  for (const [key, label] of [['requireApproval', 'Approve new players']]) {
     const lab = el('label', 'check');
     const cb = Object.assign(el('input'), { type: 'checkbox', checked: !!s.settings[key] });
     cb.onchange = () => emit('host', { type: 'options', [key]: cb.checked });
@@ -542,10 +569,17 @@ function tick() {
     bar.style.width = (pct * 100) + '%';
     bar.style.background = pct < .25 ? 'var(--red)' : '';
     const secs = Math.ceil(left / 1000);
-    if (state.you && h.toAct === state.you.seat && secs <= 5 && secs > 0 && secs !== tick.last) { tick.last = secs; sfx.tick(); }
-  }
+    const mine = state.you && h.toAct === state.you.seat && state.settings.turnSeconds > 5;
+    if (mine && secs <= 5 && secs > 0 && secs !== tick.last) {
+      if (tick.last === undefined || tick.last > 5 || tick.last === null) { sfx.warn(); buzz([120, 80, 120]); }
+      else sfx.tick();
+      tick.last = secs;
+    }
+    hurry(mine && secs <= 5 && secs > 0 ? secs : 0);
+    if (!mine) tick.last = null;
+  } else hurry(0);
   const q = document.querySelector('[data-rit]');
-  if (q && h && h.rit && h.rit.pending) q.textContent = `All-in — run it twice? (${Math.max(0, Math.ceil((h.rit.deadline - now()) / 1000))}s)`;
+  if (q && h && h.rit && h.rit.pending) q.textContent = `All-in — how many times? (${Math.max(0, Math.ceil((h.rit.deadline - now()) / 1000))}s)`;
   requestAnimationFrame(tick);
 }
 requestAnimationFrame(tick);
@@ -656,7 +690,9 @@ const sfx = (() => {
     chips(at = 0) { tone(2400, 0.06, { type: 'triangle', vol: 0.07, at }); tone(3100, 0.07, { type: 'triangle', vol: 0.06, at: at + 0.05 }); tone(2700, 0.08, { type: 'triangle', vol: 0.05, at: at + 0.1 }); },
     check() { tone(180, 0.07, { vol: 0.25 }); tone(170, 0.07, { vol: 0.22, at: 0.12 }); },
     fold() { noise(0.22, { vol: 0.18, freq: 1800, to: 500 }); },
-    turn() { tone(660, 0.18, { vol: 0.12 }); tone(880, 0.3, { vol: 0.12, at: 0.14 }); },
+    // your turn: a bright rising three-note bell, unlike any other sound in the game
+    turn() { [[784, 0], [1047, 0.11], [1568, 0.22]].forEach(([f, at]) => { tone(f, 0.45, { type: 'triangle', vol: 0.16, at }); tone(f * 2, 0.25, { vol: 0.04, at }); }); },
+    warn() { tone(520, 0.14, { type: 'square', vol: 0.07 }); tone(520, 0.14, { type: 'square', vol: 0.07, at: 0.18 }); },
     win() { [523, 659, 784, 1047].forEach((f, i) => tone(f, 0.25, { type: 'triangle', vol: 0.1, at: i * 0.09 })); },
     allin() { for (let i = 0; i < 5; i++) this.chips(i * 0.07); },
     pop() { tone(880, 0.07, { vol: 0.08 }); tone(1320, 0.09, { vol: 0.07, at: 0.06 }); },
@@ -678,9 +714,10 @@ function playSounds(prev, s) {
     for (let i = 0; i < Math.min(n, 12); i++) sfx.deal(i * 0.09);
   }
   // board cards
-  const pb = ph && h && ph.number === h.number ? ph.board.length + (ph.board2 ? ph.board2.length : 0) : 0;
-  const nb = h ? h.board.length + (h.board2 ? h.board2.length : 0) : 0;
-  for (let i = 0; i < Math.max(0, nb - pb); i++) sfx.deal(i * 0.22);
+  const cnt = x => (x.boards || [x.board]).reduce((a, b) => a + b.length, 0);
+  const pb = ph && h && ph.number === h.number ? cnt(ph) : 0;
+  const nb = h ? cnt(h) : 0;
+  for (let i = 0; i < Math.max(0, nb - pb); i++) sfx.deal(i * 0.3);
 
   let won = false;
   for (const e of fresh) {
@@ -696,7 +733,8 @@ function playSounds(prev, s) {
   // your turn
   const mine = s.you && h && h.toAct === s.you.seat;
   const wasMine = !!(h && prev.you && ph && ph.toAct === prev.you.seat && ph.number === h.number && ph.street === h.street);
-  if (mine && !wasMine) sfx.turn();
+  if (mine && !wasMine) { sfx.turn(); buzz([220, 90, 220]); }
+  turnTitle(!!mine);
   // run-it-twice vote, join and rebuy requests
   if (s.you && h && h.rit && h.rit.pending && !(ph && ph.rit && ph.rit.pending)) sfx.ding();
   if (s.requests.length > (prev.requests ? prev.requests.length : 0)) sfx.ding();
@@ -781,3 +819,47 @@ $('chatForm').onsubmit = async e => {
   const r = await emit('chat', { text });
   if (r.ok) $('chatInput').value = '';
 };
+
+// ---------- buy-in picker (joining and rebuying) ----------
+let buyInDraft = null;
+function visitorBuyIn() { return buyInDraft || (state && state.settings.startingStack); }
+function amountPicker(lim, start, current, onChange) {
+  const wrap = el('div', 'amount-picker');
+  lim = lim || { min: 1, max: start * 10 };
+  const amt = Object.assign(el('input'), { type: 'number', min: lim.min, max: lim.max, step: 1, value: current || start, inputMode: 'numeric' });
+  amt.oninput = () => onChange(Math.floor(Number(amt.value) || 0));
+  const quick = el('div', 'presets');
+  for (const [txt, v] of [['½×', start / 2], ['1×', start], ['2×', start * 2], ['3×', start * 3]]) {
+    const val = Math.max(lim.min, Math.min(lim.max, Math.round(v)));
+    quick.appendChild(button(`${txt} ${fmt(val)}`, 'btn', () => { amt.value = val; onChange(val); }));
+  }
+  const row = el('div', 'row rebuy-row');
+  row.append(el('span', 'pre-label', 'Buy-in'), amt);
+  wrap.append(quick, row);
+  return wrap;
+}
+
+// ---------- turn alerts: vibration, 5-second warning, tab title ----------
+function buzz(pattern) { try { if (navigator.vibrate && sfx.on) navigator.vibrate(pattern); } catch {} }
+let hurryShown = 0;
+function hurry(secs) {
+  const bar = $('actions');
+  if (secs === hurryShown) return;
+  hurryShown = secs;
+  let b = $('hurry');
+  if (!secs) { if (b) b.remove(); bar.classList.remove('hurrying'); return; }
+  if (!b) { b = el('div', 'hurry'); b.id = 'hurry'; bar.prepend(b); }
+  bar.classList.add('hurrying');
+  b.textContent = `⏱ ${secs} second${secs === 1 ? '' : 's'} left — make your move!`;
+}
+const baseTitle = document.title;
+let titleT = 0;
+function turnTitle(on) {
+  clearInterval(titleT);
+  document.title = baseTitle;
+  if (on && document.hidden) {
+    let flip = false;
+    titleT = setInterval(() => { flip = !flip; document.title = flip ? '● Your turn!' : baseTitle; }, 900);
+  }
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { clearInterval(titleT); document.title = baseTitle; } });
